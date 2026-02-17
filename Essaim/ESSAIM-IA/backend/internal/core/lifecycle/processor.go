@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"essaim-backend/internal/core/economy"
+	"essaim-backend/internal/core/journal"
 	"essaim-backend/internal/core/orchestrator"
 	"essaim-backend/internal/domain/agent"
 	"essaim-backend/internal/domain/graph"
@@ -34,6 +35,7 @@ type Processor struct {
 	repo      *persistence.MongoRepo
 	wsHub     *ws.Hub
 	dispatch  *orchestrator.Dispatcher
+	journal   *journal.Journal
 }
 
 // NewProcessor creates a new agent processor.
@@ -45,6 +47,7 @@ func NewProcessor(
 	repo *persistence.MongoRepo,
 	wsHub *ws.Hub,
 	dispatch *orchestrator.Dispatcher,
+	j *journal.Journal,
 ) *Processor {
 	return &Processor{
 		ctx:       ctx,
@@ -54,6 +57,7 @@ func NewProcessor(
 		repo:      repo,
 		wsHub:     wsHub,
 		dispatch:  dispatch,
+		journal:   j,
 	}
 }
 
@@ -143,6 +147,11 @@ func (p *Processor) handleTask(ag *agent.Agent, pkt message.Packet) error {
 	objectiveRaw, _ := json.Marshal(pkt.Body)
 	userMessage := string(objectiveRaw)
 
+	// Journal: record task received
+	if p.journal != nil {
+		p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryTaskReceived, userMessage)
+	}
+
 	// Generate the system prompt
 	systemPrompt := agent.GenerateSystemPrompt(ag)
 
@@ -171,6 +180,11 @@ func (p *Processor) handleTask(ag *agent.Agent, pkt message.Packet) error {
 	log.Printf("[PROCESSOR] ✅ LLM response for %s: %d tokens, %dms", ag.ID[:8], resp.TokensUsed, resp.LatencyMs)
 	log.Printf("[PROCESSOR] 📄 Raw LLM output for %s:\n%s", ag.ID[:8], resp.RawJSON)
 	p.broadcastLog(fmt.Sprintf("✅ Réponse LLM pour %s: %d tokens, %dms", ag.ID[:8], resp.TokensUsed, resp.LatencyMs))
+
+	// Journal: record LLM response
+	if p.journal != nil {
+		p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryLLMResponse, resp.RawJSON)
+	}
 
 	// Deduct tokens from budget
 	bankrupt, err := p.budgetMgr.Deduct(ag.ID, float64(resp.TokensUsed))
@@ -318,13 +332,18 @@ func (p *Processor) handleChildReport(parent *agent.Agent, pkt message.Packet) e
 	log.Printf("[PROCESSOR] ✅ Synthesis for %s: %d tokens, %dms", parent.ID[:8], resp.TokensUsed, resp.LatencyMs)
 	log.Printf("[PROCESSOR] 📄 Synthesis output:\n%s", resp.RawJSON)
 
+	// Journal: record synthesis
+	if p.journal != nil {
+		p.journal.Record(parent.ID, string(parent.Role), parent.ParentID, journal.EntrySynthesis, resp.RawJSON)
+	}
+
 	// Deduct tokens
 	bankrupt, _ := p.budgetMgr.Deduct(parent.ID, float64(resp.TokensUsed))
 	parent.Budget, _ = p.budgetMgr.GetBudget(parent.ID)
 
 	if bankrupt {
-		p.broadcastLog(fmt.Sprintf("💀 %s en faillite pendant la synthèse", parent.ID[:8]))
-		return p.killAgent(parent, "budget épuisé pendant synthèse")
+		log.Printf("[PROCESSOR] ⚠ Agent %s budget épuisé pendant synthèse — continue", parent.ID[:8])
+		p.broadcastLog(fmt.Sprintf("⚠ %s budget bas pendant synthèse — continue", parent.ID[:8]))
 	}
 
 	// Parse synthesis response
@@ -362,14 +381,33 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 	log.Printf("[PROCESSOR] 🔀 Agent %s spawning %d children", parent.ID[:8], len(spawn.Subtasks))
 	p.broadcastLog(fmt.Sprintf("🔀 %s crée %d sous-agents", parent.ID[:8], len(spawn.Subtasks)))
 
+	// Journal: record spawn
+	if p.journal != nil {
+		var spawnInfo string
+		for _, t := range spawn.Subtasks {
+			spawnInfo += fmt.Sprintf("- **%s** : %s\n", t.Role, t.TaskDescription)
+		}
+		p.journal.Record(parent.ID, string(parent.Role), parent.ParentID, journal.EntrySpawn, fmt.Sprintf("Création de %d sous-agents :\n%s", len(spawn.Subtasks), spawnInfo))
+	}
+
 	parent.Status = agent.StatusWaiting
 	parent.UpdatedAt = time.Now()
 	p.broadcastState(parent)
 
+	// Calculate fair budget fraction based on number of children
+	numChildren := len(spawn.Subtasks)
+	fairFraction := 0.8 / float64(numChildren) // 80% of budget split among children, 20% reserve
+	if fairFraction > 0.5 {
+		fairFraction = 0.5
+	}
+	if fairFraction < 0.05 {
+		fairFraction = 0.05
+	}
+
 	for i, task := range spawn.Subtasks {
 		fraction := task.BudgetFraction
 		if fraction <= 0 || fraction > 0.5 {
-			fraction = 0.2
+			fraction = fairFraction
 		}
 
 		childBudget, err := p.budgetMgr.AllocateFromParent(parent.ID, fraction)
@@ -441,6 +479,54 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 			},
 		}
 		p.dispatch.Enqueue(taskPkt)
+	}
+
+	// FALLBACK: if no children were created (all budget allocations failed),
+	// the agent does WORK itself instead of waiting forever
+	if len(parent.ChildrenIDs) == 0 {
+		log.Printf("[PROCESSOR] ⚠ Agent %s SPAWN failed (0 children created) — falling back to WORK", parent.ID[:8])
+		p.broadcastLog(fmt.Sprintf("⚠ %s n'a pu créer aucun sous-agent — fait le travail lui-même", parent.ID[:8]))
+
+		parent.Status = agent.StatusWorking
+		parent.UpdatedAt = time.Now()
+		p.broadcastState(parent)
+
+		// Combine all subtask descriptions into a single task
+		var combinedTask string
+		for _, task := range spawn.Subtasks {
+			combinedTask += "- " + task.TaskDescription + "\n"
+		}
+
+		// Re-call LLM with a forced WORK prompt
+		workPrompt := fmt.Sprintf("Tu n'as pas assez de budget pour déléguer. FAIS LE TRAVAIL TOI-MÊME.\n"+
+			"Voici les tâches à accomplir :\n%s\n"+
+			"Réponds avec {\"action\": \"WORK\", \"payload\": {\"result\": \"...\", \"confidence\": 0.0-1.0}}", combinedTask)
+
+		systemPrompt := agent.GenerateSystemPrompt(parent)
+		resp, err := p.llm.Call(p.ctx, systemPrompt, workPrompt)
+		if err != nil {
+			log.Printf("[PROCESSOR] ❌ Fallback WORK LLM call failed: %v", err)
+			p.reportToParent(parent, message.RptFail, map[string]interface{}{
+				"error": "spawn failed and fallback work failed: " + err.Error(),
+			})
+			parent.Status = agent.StatusDead
+			parent.UpdatedAt = time.Now()
+			p.broadcastState(parent)
+			return err
+		}
+
+		// Deduct tokens
+		p.budgetMgr.Deduct(parent.ID, float64(resp.TokensUsed))
+		parent.Budget, _ = p.budgetMgr.GetBudget(parent.ID)
+
+		log.Printf("[PROCESSOR] ✅ Fallback WORK for %s: %d tokens", parent.ID[:8], resp.TokensUsed)
+
+		var action LLMAction
+		if err := json.Unmarshal([]byte(resp.RawJSON), &action); err == nil {
+			return p.handleWork(parent, action.Payload)
+		}
+		// If parse fails, treat raw response as work result
+		return p.handleWork(parent, json.RawMessage(fmt.Sprintf(`{"result": %s, "confidence": 0.7}`, resp.RawJSON)))
 	}
 
 	if p.repo != nil {
@@ -573,6 +659,11 @@ func (p *Processor) handleWork(ag *agent.Agent, payload json.RawMessage) error {
 	log.Printf("[PROCESSOR] 📄 WORK RESULT from %s:\n%s", ag.ID[:8], work.Result)
 	p.broadcastLog(fmt.Sprintf("📝 %s (%s) a terminé son travail (confiance: %.0f%%)", ag.ID[:8], ag.Role, work.Confidence*100))
 
+	// Journal: record work content
+	if p.journal != nil {
+		p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryWork, fmt.Sprintf("**Confiance : %.0f%%**\n\n%s", work.Confidence*100, work.Result))
+	}
+
 	// Report to parent
 	p.reportToParent(ag, message.RptDone, map[string]interface{}{
 		"result":     work.Result,
@@ -581,7 +672,7 @@ func (p *Processor) handleWork(ag *agent.Agent, payload json.RawMessage) error {
 		"role":       ag.Role,
 	})
 
-	// Mark agent as done
+	// Agent is done with this task — mark as done but DON'T destroy
 	ag.Status = agent.StatusDead
 	ag.UpdatedAt = time.Now()
 	p.broadcastState(ag)
@@ -615,6 +706,19 @@ func (p *Processor) handleReport(ag *agent.Agent, payload json.RawMessage) error
 		}
 	}
 	p.broadcastLog(fmt.Sprintf("📋 %s (%s) fait son rapport: %s", ag.ID[:8], ag.Role, truncate(report.Summary, 80)))
+
+	// Journal: record report
+	if p.journal != nil {
+		var reportContent string
+		reportContent = fmt.Sprintf("**Confiance : %.0f%%**\n\n%s", report.Confidence*100, report.Summary)
+		if len(report.Artifacts) > 0 {
+			reportContent += "\n\n**Artifacts :**\n"
+			for _, art := range report.Artifacts {
+				reportContent += fmt.Sprintf("- **%s** :\n```\n%s\n```\n", art.Filename, art.Content)
+			}
+		}
+		p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryReport, reportContent)
+	}
 
 	// Report to parent
 	p.reportToParent(ag, message.RptDone, map[string]interface{}{
@@ -680,6 +784,20 @@ func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, 
 				"result":  body,
 			},
 		})
+
+		// Auto-generate journal markdown
+		if p.journal != nil {
+			resultJSON, _ := json.MarshalIndent(body, "", "  ")
+			p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryReport, fmt.Sprintf("**Rapport final :**\n```json\n%s\n```", string(resultJSON)))
+			if path, err := p.journal.GenerateMarkdown(); err == nil {
+				log.Printf("[PROCESSOR] 📓 Journal auto-généré: %s", path)
+				p.broadcastLog(fmt.Sprintf("📓 Journal sauvegardé: %s", path))
+			} else {
+				log.Printf("[PROCESSOR] ❌ Erreur génération journal: %v", err)
+			}
+			p.journal.Reset()
+		}
+
 		return
 	}
 

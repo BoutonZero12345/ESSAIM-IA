@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,9 +121,39 @@ func (c *Client) Call(ctx context.Context, systemPrompt string, userMessage stri
 	// Set system instruction
 	c.model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
 
-	resp, err := c.model.GenerateContent(ctx, genai.Text(userMessage))
-	if err != nil {
-		return nil, fmt.Errorf("Gemini API error: %w", err)
+	// Retry with backoff on 429 rate limit errors
+	var resp *genai.GenerateContentResponse
+	var err error
+	maxRetries := 3
+	retryBackoff := 5 * time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err = c.model.GenerateContent(ctx, genai.Text(userMessage))
+		if err == nil {
+			break
+		}
+
+		// Check if it's a rate limit error (429)
+		errStr := err.Error()
+		is429 := false
+		for _, keyword := range []string{"429", "rate", "quota", "RESOURCE_EXHAUSTED"} {
+			if len(errStr) > 0 && strings.Contains(errStr, keyword) {
+				is429 = true
+				break
+			}
+		}
+
+		if !is429 || attempt >= maxRetries {
+			return nil, fmt.Errorf("Gemini API error: %w", err)
+		}
+
+		log.Printf("[LLM] ⚠ Rate limited (429), retrying in %v (attempt %d/%d)", retryBackoff, attempt+1, maxRetries)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(retryBackoff):
+		}
+		retryBackoff *= 2
 	}
 
 	latency := time.Since(start).Milliseconds()

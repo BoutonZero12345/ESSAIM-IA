@@ -29,16 +29,29 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for dev
 }
 
+// safeConn wraps a websocket connection with a write mutex to prevent concurrent writes.
+type safeConn struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+// writeMessage safely writes a message, serializing concurrent writes.
+func (sc *safeConn) writeMessage(messageType int, data []byte) error {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.conn.WriteMessage(messageType, data)
+}
+
 // Hub manages connected WebSocket clients and broadcasts events.
 type Hub struct {
 	mu      sync.RWMutex
-	clients map[*websocket.Conn]bool
+	clients map[*safeConn]bool
 }
 
 // NewHub creates a new WebSocket hub.
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[*websocket.Conn]bool),
+		clients: make(map[*safeConn]bool),
 	}
 }
 
@@ -50,28 +63,30 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sc := &safeConn{conn: conn}
+
 	h.mu.Lock()
-	h.clients[conn] = true
+	h.clients[sc] = true
 	h.mu.Unlock()
 
 	log.Printf("[WS HUB] New client connected (%d total)", h.ClientCount())
 
 	// Keep connection alive and handle disconnect
-	go h.readPump(conn)
+	go h.readPump(sc)
 }
 
 // readPump listens for client messages (mainly to detect disconnect).
-func (h *Hub) readPump(conn *websocket.Conn) {
+func (h *Hub) readPump(sc *safeConn) {
 	defer func() {
 		h.mu.Lock()
-		delete(h.clients, conn)
+		delete(h.clients, sc)
 		h.mu.Unlock()
-		conn.Close()
+		sc.conn.Close()
 		log.Printf("[WS HUB] Client disconnected (%d remaining)", h.ClientCount())
 	}()
 
 	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
+		if _, _, err := sc.conn.ReadMessage(); err != nil {
 			break
 		}
 	}
@@ -86,13 +101,19 @@ func (h *Hub) Broadcast(event Event) {
 	}
 
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	clients := make([]*safeConn, 0, len(h.clients))
+	for sc := range h.clients {
+		clients = append(clients, sc)
+	}
+	h.mu.RUnlock()
 
-	for conn := range h.clients {
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	for _, sc := range clients {
+		if err := sc.writeMessage(websocket.TextMessage, data); err != nil {
 			log.Printf("[WS HUB] Write error: %v", err)
-			conn.Close()
-			delete(h.clients, conn)
+			h.mu.Lock()
+			delete(h.clients, sc)
+			h.mu.Unlock()
+			sc.conn.Close()
 		}
 	}
 }

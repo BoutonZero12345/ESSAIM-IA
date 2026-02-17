@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"essaim-backend/internal/core/economy"
+	"essaim-backend/internal/core/journal"
 	"essaim-backend/internal/core/lifecycle"
 	"essaim-backend/internal/core/orchestrator"
 	"essaim-backend/internal/domain/agent"
@@ -151,8 +152,12 @@ func main() {
 
 	dispatcher := orchestrator.NewDispatcher(registry, budgetMgr, handler)
 
+	// === Create Journal (auto-generates markdown per mission) ===
+	missionJournal := journal.New("logs/journals")
+	log.Println("[OK] ✅ Journal initialisé (logs/journals/)")
+
 	// === Create Processor (the brain) ===
-	processor = lifecycle.NewProcessor(ctx, registry, budgetMgr, llmClient, repo, wsHub, dispatcher)
+	processor = lifecycle.NewProcessor(ctx, registry, budgetMgr, llmClient, repo, wsHub, dispatcher, missionJournal)
 	log.Println("[OK] ✅ Agent Processor (brain) initialized")
 
 	dispatcher.Start()
@@ -213,6 +218,7 @@ func main() {
 		}
 
 		log.Printf("[API] Creating Alpha agent for objective: %s", req.Objective)
+		missionJournal.SetObjective(req.Objective)
 
 		// Create the Alpha agent (root of the graph)
 		alpha := &agent.Agent{
