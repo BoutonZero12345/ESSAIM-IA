@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -149,7 +150,7 @@ func (p *Processor) handleTask(ag *agent.Agent, pkt message.Packet) error {
 
 	// Journal: record task received
 	if p.journal != nil {
-		p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryTaskReceived, userMessage)
+		p.journal.Record(ag.ID, string(ag.Role), ag.BubbleID, journal.EntryTaskReceived, userMessage)
 	}
 
 	// Generate the system prompt
@@ -164,8 +165,12 @@ func (p *Processor) handleTask(ag *agent.Agent, pkt message.Packet) error {
 	log.Printf("[PROCESSOR] 🤖 Calling LLM for agent %s (%s)...", ag.ID[:8], ag.Role)
 	p.broadcastLog(fmt.Sprintf("🤖 Appel LLM pour %s (%s)...", ag.ID[:8], ag.Role))
 
-	// Call the LLM
-	resp, err := p.llm.Call(p.ctx, systemPrompt, userMessage)
+	var resp *llm.LLMResponse
+	var err error
+
+	// Call the LLM normally
+	resp, err = p.llm.Call(p.ctx, systemPrompt, userMessage)
+
 	if err != nil {
 		log.Printf("[PROCESSOR] ❌ LLM call failed for agent %s: %v", ag.ID[:8], err)
 		p.broadcastLog(fmt.Sprintf("❌ Erreur LLM pour %s: %v", ag.ID[:8], err))
@@ -174,6 +179,12 @@ func (p *Processor) handleTask(ag *agent.Agent, pkt message.Packet) error {
 		p.reportToParent(ag, message.RptFail, map[string]interface{}{
 			"error": err.Error(),
 		})
+
+		// Mark agent as dead so parent doesn't wait forever
+		ag.Status = agent.StatusDead
+		ag.UpdatedAt = time.Now()
+		p.broadcastState(ag)
+
 		return err
 	}
 
@@ -183,7 +194,7 @@ func (p *Processor) handleTask(ag *agent.Agent, pkt message.Packet) error {
 
 	// Journal: record LLM response
 	if p.journal != nil {
-		p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryLLMResponse, resp.RawJSON)
+		p.journal.Record(ag.ID, string(ag.Role), ag.BubbleID, journal.EntryLLMResponse, resp.RawJSON)
 	}
 
 	// Deduct tokens from budget
@@ -223,7 +234,7 @@ func (p *Processor) handleTask(ag *agent.Agent, pkt message.Packet) error {
 		logEntry := &message.MissionLog{
 			Timestamp:   time.Now().Unix(),
 			FromAgentID: ag.ID,
-			ToAgentID:   ag.ParentID,
+			ToAgentID:   ag.BubbleID,
 			PacketType:  pkt.Head.Type,
 			Payload:     resp.RawJSON,
 			CostTokens:  int(resp.TokensUsed),
@@ -265,109 +276,182 @@ func (p *Processor) handleChildReport(parent *agent.Agent, pkt message.Packet) e
 	})
 	parent.UpdatedAt = time.Now()
 
-	// Check if ALL children are done
-	allDone := true
-	childResults := []string{}
-	for _, cid := range parent.ChildrenIDs {
-		childNode := p.registry.Get(cid)
-		if childNode == nil {
-			// Child was removed (dead) — considered done
-			childResults = append(childResults, fmt.Sprintf("Agent %s: [terminated]", cid[:8]))
+	// Get bubble agents
+	b := p.registry.GetBubble(parent.ID)
+	var bubbleIDs []string
+	if b != nil {
+		bubbleIDs = b.AgentIDs
+	}
+
+	// --- POSTIER ROUTING (Horizontal) ---
+	// Extract raw text to distribute
+	var childResultText string
+	var parsedRes map[string]interface{}
+	if err := json.Unmarshal([]byte(resultJSON), &parsedRes); err == nil {
+		if res, ok := parsedRes["result"].(string); ok {
+			childResultText = res
+		} else if sum, ok := parsedRes["result_summary"].(string); ok {
+			childResultText = sum
+		} else {
+			childResultText = string(resultJSON)
+		}
+	} else {
+		childResultText = string(resultJSON)
+	}
+
+	// Distribute to living siblings
+	for _, cid := range bubbleIDs {
+		if cid == childID || cid == parent.ID {
 			continue
 		}
-		if childNode.Agent.Status != agent.StatusDead {
-			allDone = false
-			log.Printf("[PROCESSOR] ⏳ Parent %s still waiting for child %s (%s)", parent.ID[:8], cid[:8], childNode.Agent.Status)
-		} else {
-			childResults = append(childResults, fmt.Sprintf("Agent %s (%s): done", cid[:8], childNode.Agent.Role))
+		siblingNode := p.registry.Get(cid)
+		if siblingNode != nil && siblingNode.Agent.Status != agent.StatusDead {
+			siblingNode.Agent.Memory = append(siblingNode.Agent.Memory, agent.Message{
+				Role:    "user",
+				Content: fmt.Sprintf("==== CONTEXTE D'ENTRÉE SUPPLÉMENTAIRE ====\nUn agent de ton groupe vient de terminer son travail. Voici sa production pour t'aider dans ta tâche :\n%s", childResultText),
+			})
+			if p.repo != nil {
+				p.repo.UpsertAgent(p.ctx, siblingNode.Agent)
+			}
+			log.Printf("[POSTIER] 📬 Context injected from %s to sibling %s", childID[:8], cid[:8])
+		}
+	}
+	// ------------------------------------
+
+	// Thread-safe trigger for Synthesis once all spawned children complete
+	parent.SubtasksPending--
+
+	if p.repo != nil {
+		p.repo.UpsertAgent(p.ctx, parent)
+	}
+
+	if parent.SubtasksPending > 0 {
+		p.broadcastLog(fmt.Sprintf("⏳ %s attend d'autres sous-agents (%d restants)...", parent.ID[:8], parent.SubtasksPending))
+		return nil
+	}
+	if parent.SubtasksPending < 0 {
+		// Prevent cascading resumeur avalanche
+		return nil
+	}
+
+	childResults := []string{}
+	// Once all children are done, extract their ACTUAL final reports from the parent's memory
+	for _, msg := range parent.Memory {
+		if strings.HasPrefix(msg.Content, "[CHILD_REPORT") {
+			parts := strings.SplitN(msg.Content, "]:\n", 2)
+			if len(parts) == 2 {
+				var parsed map[string]interface{}
+				if err := json.Unmarshal([]byte(parts[1]), &parsed); err == nil {
+					if res, ok := parsed["result"].(string); ok {
+						childResults = append(childResults, res)
+					} else if sum, ok := parsed["result_summary"].(string); ok {
+						childResults = append(childResults, sum)
+					} else {
+						childResults = append(childResults, parts[1])
+					}
+				} else {
+					childResults = append(childResults, parts[1])
+				}
+			}
 		}
 	}
 
-	if !allDone {
-		p.broadcastLog(fmt.Sprintf("⏳ %s attend d'autres sous-agents...", parent.ID[:8]))
-		return nil
-	}
+	// Structure the synthesis based on child count
+	numChildren := len(childResults)
+	var finalSummary string
 
-	// All children are done — synthesize results
-	log.Printf("[PROCESSOR] 🔄 All children of %s are done — synthesizing results", parent.ID[:8])
-	p.broadcastLog(fmt.Sprintf("🔄 Tous les sous-agents de %s ont terminé — synthèse en cours...", parent.ID[:8]))
+	if numChildren <= 3 {
+		// 1-3 agents: No Resumeur, just concatenate.
+		log.Printf("[PROCESSOR] 🔄 Group of %d agents (<=3) — no Resumeur, direct concatenation", numChildren)
+		p.broadcastLog(fmt.Sprintf("🔄 Groupe de %d agents — concaténation directe sans Résumeur.", numChildren))
+		for idx, res := range childResults {
+			finalSummary += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", idx+1, res)
+		}
+	} else if numChildren <= 7 {
+		// 4-7 agents: 1 Resumeur
+		log.Printf("[PROCESSOR] 🔄 Group of %d agents (4-7) — invoking 1 Resumeur", numChildren)
+		p.broadcastLog(fmt.Sprintf("🔄 Groupe de %d agents — appel de 1 Résumeur...", numChildren))
 
-	parent.Status = agent.StatusWorking
-	parent.UpdatedAt = time.Now()
-	p.broadcastState(parent)
+		var allChildResultsStr string
+		for idx, res := range childResults {
+			allChildResultsStr += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", idx+1, res)
+		}
 
-	// Check LLM client
-	if p.llm == nil {
-		// No LLM — just pass through the raw child results
-		p.reportToParent(parent, message.RptDone, map[string]interface{}{
-			"result_summary": "Synthesis (no LLM available)",
-			"child_results":  pkt.Body,
-		})
-		parent.Status = agent.StatusDead
-		parent.UpdatedAt = time.Now()
-		p.broadcastState(parent)
-		return nil
-	}
-
-	// Build synthesis prompt
-	synthesisPrompt := fmt.Sprintf(
-		"Tes sous-agents ont terminé leur travail. Voici leurs rapports :\n\n%s\n\n"+
-			"Synthétise ces résultats en un rapport final cohérent. "+
-			"Réponds en JSON strict : {\"action\": \"REPORT\", \"payload\": {\"result_summary\": \"...\", \"artifacts\": [{\"filename\": \"...\", \"content\": \"...\"}], \"confidence_score\": 0.0-1.0}}",
-		string(resultJSON),
-	)
-
-	systemPrompt := agent.GenerateSystemPrompt(parent)
-	resp, err := p.llm.Call(p.ctx, systemPrompt, synthesisPrompt)
-	if err != nil {
-		log.Printf("[PROCESSOR] ❌ Synthesis LLM call failed for %s: %v", parent.ID[:8], err)
-		// Report raw child results to parent's parent
-		p.reportToParent(parent, message.RptDone, pkt.Body)
-		parent.Status = agent.StatusDead
-		parent.UpdatedAt = time.Now()
-		p.broadcastState(parent)
-		return err
-	}
-
-	log.Printf("[PROCESSOR] ✅ Synthesis for %s: %d tokens, %dms", parent.ID[:8], resp.TokensUsed, resp.LatencyMs)
-	log.Printf("[PROCESSOR] 📄 Synthesis output:\n%s", resp.RawJSON)
-
-	// Journal: record synthesis
-	if p.journal != nil {
-		p.journal.Record(parent.ID, string(parent.Role), parent.ParentID, journal.EntrySynthesis, resp.RawJSON)
-	}
-
-	// Deduct tokens
-	bankrupt, _ := p.budgetMgr.Deduct(parent.ID, float64(resp.TokensUsed))
-	parent.Budget, _ = p.budgetMgr.GetBudget(parent.ID)
-
-	if bankrupt {
-		log.Printf("[PROCESSOR] ⚠ Agent %s budget épuisé pendant synthèse — continue", parent.ID[:8])
-		p.broadcastLog(fmt.Sprintf("⚠ %s budget bas pendant synthèse — continue", parent.ID[:8]))
-	}
-
-	// Parse synthesis response
-	var action LLMAction
-	if err := json.Unmarshal([]byte(resp.RawJSON), &action); err != nil {
-		log.Printf("[PROCESSOR] ⚠ Synthesis response not parseable, forwarding raw")
-		p.reportToParent(parent, message.RptDone, map[string]interface{}{
-			"result_summary": resp.RawJSON,
-		})
+		finalSummary = p.callResumeur(parent, allChildResultsStr)
 	} else {
-		switch action.Action {
-		case "SPAWN":
-			return p.handleSpawn(parent, action.Payload)
-		case "REPORT":
-			return p.handleReport(parent, action.Payload)
-		default:
-			return p.handleReport(parent, action.Payload)
+		// 8-12 agents: 2 Resumeurs
+		log.Printf("[PROCESSOR] 🔄 Group of %d agents (8-12) — invoking 2 Resumeurs", numChildren)
+		p.broadcastLog(fmt.Sprintf("🔄 Groupe de %d agents — appel de 2 Résumeurs séquentiels...", numChildren))
+
+		half := numChildren / 2
+		var part1, part2 string
+		for idx, res := range childResults[:half] {
+			part1 += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", idx+1, res)
 		}
+		for idx, res := range childResults[half:] {
+			part2 += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", half+idx+1, res)
+		}
+
+		sum1 := p.callResumeur(parent, part1)
+		sum2 := p.callResumeur(parent, part2)
+
+		finalSummary = fmt.Sprintf("=== SYNTHÈSE PARTIE 1 ===\n%s\n\n=== SYNTHÈSE PARTIE 2 ===\n%s", sum1, sum2)
 	}
+
+	// Then report to parent
+	p.reportToParent(parent, message.RptDone, map[string]interface{}{
+		"result_summary": finalSummary,
+	})
 
 	parent.Status = agent.StatusDead
 	parent.UpdatedAt = time.Now()
 	p.broadcastState(parent)
 	return nil
+}
+
+func (p *Processor) callResumeur(parent *agent.Agent, content string) string {
+	resumeurPrompt := fmt.Sprintf(
+		"Voici les productions terminées d'une partie du sous-groupe.\n"+
+			"TA TÂCHE : Lis l'intégralité de ces travaux, crée un compte-rendu consolidé et intelligent (Executive Summary) "+
+			"pour le Manager de ce groupe. Garde l'essence, les décisions clés, les pépites et le code si présent, mais retire le bruit inutile.\n\n%s\n\n"+
+			"Réponds en JSON strict : {\"action\": \"REPORT\", \"payload\": {\"result_summary\": \"[TON RÉSUMÉ CONSOLIDÉ ICI]\", \"artifacts\": [], \"confidence_score\": 1.0}}",
+		content,
+	)
+
+	virtualResumeur := &agent.Agent{
+		ID:       parent.ID + "-RESUMEUR-" + fmt.Sprintf("%d", time.Now().UnixNano()%10000),
+		Role:     agent.RoleResumeur,
+		BubbleID: parent.BubbleID,
+		Budget:   parent.Budget,
+	}
+
+	systemPrompt := agent.GenerateSystemPrompt(virtualResumeur)
+
+	resp, err := p.llm.Call(p.ctx, systemPrompt, resumeurPrompt)
+	if err != nil {
+		log.Printf("[PROCESSOR] ❌ Resumeur LLM call failed for %s: %v", parent.ID[:8], err)
+		return "Erreur lors de la Synthèse: Echec du LLM."
+	}
+
+	if p.journal != nil {
+		p.journal.Record(parent.ID, string(agent.RoleResumeur), parent.BubbleID, journal.EntrySynthesis, resp.RawJSON)
+	}
+
+	p.budgetMgr.Deduct(parent.ID, float64(resp.TokensUsed))
+
+	var action LLMAction
+	if err := json.Unmarshal([]byte(resp.RawJSON), &action); err != nil {
+		return resp.RawJSON
+	}
+
+	var payloadMap map[string]interface{}
+	if err := json.Unmarshal(action.Payload, &payloadMap); err == nil {
+		if res, ok := payloadMap["result_summary"].(string); ok {
+			return res
+		}
+	}
+
+	return string(action.Payload)
 }
 
 // handleSpawn creates child agents from the LLM's SPAWN action.
@@ -376,6 +460,14 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 
 	var spawn SpawnPayload
 	subtasks := p.parseSubtasks(payload)
+
+	// Enforce maximum of 12 sub-agents spawned by a single agent
+	if len(subtasks) > 12 {
+		log.Printf("[PROCESSOR] ⚠ Agent %s attempted to spawn %d children, capping at 12.", parent.ID[:8], len(subtasks))
+		p.broadcastLog(fmt.Sprintf("⚠ %s tente de créer %d enfants (limite 12) - Troncature.", parent.ID[:8], len(subtasks)))
+		subtasks = subtasks[:12]
+	}
+
 	spawn.Subtasks = subtasks
 
 	log.Printf("[PROCESSOR] 🔀 Agent %s spawning %d children", parent.ID[:8], len(spawn.Subtasks))
@@ -387,11 +479,12 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 		for _, t := range spawn.Subtasks {
 			spawnInfo += fmt.Sprintf("- **%s** : %s\n", t.Role, t.TaskDescription)
 		}
-		p.journal.Record(parent.ID, string(parent.Role), parent.ParentID, journal.EntrySpawn, fmt.Sprintf("Création de %d sous-agents :\n%s", len(spawn.Subtasks), spawnInfo))
+		p.journal.Record(parent.ID, string(parent.Role), parent.BubbleID, journal.EntrySpawn, fmt.Sprintf("Création de %d sous-agents :\n%s", len(spawn.Subtasks), spawnInfo))
 	}
 
 	parent.Status = agent.StatusWaiting
 	parent.UpdatedAt = time.Now()
+	parent.SubtasksPending = len(spawn.Subtasks)
 	p.broadcastState(parent)
 
 	// Calculate fair budget fraction based on number of children
@@ -400,13 +493,13 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 	if fairFraction > 0.5 {
 		fairFraction = 0.5
 	}
-	if fairFraction < 0.05 {
-		fairFraction = 0.05
+	if fairFraction < 0.001 {
+		fairFraction = 0.001
 	}
 
 	for i, task := range spawn.Subtasks {
 		fraction := task.BudgetFraction
-		if fraction <= 0 || fraction > 0.5 {
+		if fraction <= 0 || fraction > 0.8 {
 			fraction = fairFraction
 		}
 
@@ -414,6 +507,7 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 		if err != nil {
 			log.Printf("[PROCESSOR] ⚠ Budget allocation failed for child %d: %v", i, err)
 			p.broadcastLog(fmt.Sprintf("⚠ Budget insuffisant pour créer le sous-agent %d", i+1))
+			parent.SubtasksPending--
 			continue
 		}
 
@@ -423,20 +517,21 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 		}
 
 		child := &agent.Agent{
-			ID:          uuid.New().String(),
-			ParentID:    parent.ID,
-			Role:        role,
-			Status:      agent.StatusBorn,
-			Budget:      childBudget,
-			Memory:      make([]agent.Message, 0),
-			ChildrenIDs: make([]string, 0),
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ID:         uuid.New().String(),
+			BubbleID:   parent.ID, // The parent's ID becomes the BubbleID for this group
+			Role:       role,
+			Status:     agent.StatusBorn,
+			Budget:     childBudget,
+			RetryCount: 0,
+			Memory:     make([]agent.Message, 0),
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
 		}
 
 		if err := p.registry.Register(child); err != nil {
 			log.Printf("[PROCESSOR] ❌ Failed to register child: %v", err)
 			p.broadcastLog(fmt.Sprintf("❌ Échec enregistrement sous-agent: %v", err))
+			parent.SubtasksPending--
 			continue
 		}
 
@@ -445,7 +540,7 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 			continue
 		}
 
-		parent.ChildrenIDs = append(parent.ChildrenIDs, child.ID)
+		// The Registry handles adding the child to the parent's Bubble (ID = parent.ID)
 
 		if p.repo != nil {
 			p.repo.UpsertAgent(p.ctx, child)
@@ -481,9 +576,18 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 		p.dispatch.Enqueue(taskPkt)
 	}
 
+	if p.repo != nil {
+		p.repo.UpsertAgent(p.ctx, parent)
+	}
+
 	// FALLBACK: if no children were created (all budget allocations failed),
 	// the agent does WORK itself instead of waiting forever
-	if len(parent.ChildrenIDs) == 0 {
+	bBubble := p.registry.GetBubble(parent.ID)
+	numSpawned := 0
+	if bBubble != nil {
+		numSpawned = len(bBubble.AgentIDs)
+	}
+	if numSpawned == 0 {
 		log.Printf("[PROCESSOR] ⚠ Agent %s SPAWN failed (0 children created) — falling back to WORK", parent.ID[:8])
 		p.broadcastLog(fmt.Sprintf("⚠ %s n'a pu créer aucun sous-agent — fait le travail lui-même", parent.ID[:8]))
 
@@ -563,7 +667,7 @@ func (p *Processor) parseSubtasks(payload json.RawMessage) []SubtaskDef {
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(payload, &rawMap); err == nil {
 		// Check nested arrays with various key names
-		for _, key := range []string{"subtasks", "tasks", "sub_tasks", "children", "agents"} {
+		for _, key := range []string{"subtasks", "tasks", "sub_tasks", "children", "agents", "bubbles"} {
 			if val, ok := rawMap[key]; ok {
 				raw, _ := json.Marshal(val)
 				var nested []SubtaskDef
@@ -614,7 +718,7 @@ func (p *Processor) parseSubtasks(payload json.RawMessage) []SubtaskDef {
 // extractSubtaskFromMap tries to extract task info from a generic map.
 func (p *Processor) extractSubtaskFromMap(m map[string]interface{}) SubtaskDef {
 	desc := ""
-	for _, key := range []string{"task_description", "description", "task", "instruction", "objective"} {
+	for _, key := range []string{"task_description", "description", "task", "instruction", "instructions", "objective"} {
 		if v, ok := m[key].(string); ok && v != "" {
 			desc = v
 			break
@@ -661,7 +765,7 @@ func (p *Processor) handleWork(ag *agent.Agent, payload json.RawMessage) error {
 
 	// Journal: record work content
 	if p.journal != nil {
-		p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryWork, fmt.Sprintf("**Confiance : %.0f%%**\n\n%s", work.Confidence*100, work.Result))
+		p.journal.Record(ag.ID, string(ag.Role), ag.BubbleID, journal.EntryWork, fmt.Sprintf("**Confiance : %.0f%%**\n\n%s", work.Confidence*100, work.Result))
 	}
 
 	// Report to parent
@@ -717,7 +821,7 @@ func (p *Processor) handleReport(ag *agent.Agent, payload json.RawMessage) error
 				reportContent += fmt.Sprintf("- **%s** :\n```\n%s\n```\n", art.Filename, art.Content)
 			}
 		}
-		p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryReport, reportContent)
+		p.journal.Record(ag.ID, string(ag.Role), ag.BubbleID, journal.EntryReport, reportContent)
 	}
 
 	// Report to parent
@@ -746,12 +850,19 @@ func (p *Processor) killAgent(ag *agent.Agent, reason string) error {
 	log.Printf("[PROCESSOR] 💀 Killing agent %s: %s", ag.ID[:8], reason)
 	p.broadcastLog(fmt.Sprintf("💀 Agent %s détruit: %s", ag.ID[:8], reason))
 
-	// IMPORTANT: notify parent that this child died (so parent doesn't wait forever)
-	if ag.ParentID != "" {
+	// IMPORTANT: notify Postier/Architect that this child died (so parent doesn't wait forever)
+	if ag.BubbleID != "" {
 		p.reportToParent(ag, message.RptFail, map[string]interface{}{
 			"reason":   reason,
 			"agent_id": ag.ID,
 			"role":     ag.Role,
+		})
+	} else {
+		// If root agent is killed, still trigger final report to broadcast failure and save journal
+		p.reportToParent(ag, message.RptFail, map[string]interface{}{
+			"reason":   "Mission interrompue: " + reason,
+			"agent_id": ag.ID,
+			"status":   "MISSION FAILED",
 		})
 	}
 
@@ -772,9 +883,9 @@ func (p *Processor) killAgent(ag *agent.Agent, reason string) error {
 	return nil
 }
 
-// reportToParent sends a report packet to the parent agent.
+// reportToParent sends a report packet to the Bubble's Postier/Creator.
 func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, body map[string]interface{}) {
-	if ag.ParentID == "" {
+	if ag.BubbleID == "" {
 		// Root agent — broadcast final result to frontend
 		log.Printf("[PROCESSOR] 🏁 Root agent %s completed — broadcasting final result", ag.ID[:8])
 		p.wsHub.Broadcast(ws.Event{
@@ -788,7 +899,7 @@ func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, 
 		// Auto-generate journal markdown
 		if p.journal != nil {
 			resultJSON, _ := json.MarshalIndent(body, "", "  ")
-			p.journal.Record(ag.ID, string(ag.Role), ag.ParentID, journal.EntryReport, fmt.Sprintf("**Rapport final :**\n```json\n%s\n```", string(resultJSON)))
+			p.journal.Record(ag.ID, string(ag.Role), ag.BubbleID, journal.EntryReport, fmt.Sprintf("**Rapport final :**\n```json\n%s\n```", string(resultJSON)))
 			if path, err := p.journal.GenerateMarkdown(); err == nil {
 				log.Printf("[PROCESSOR] 📓 Journal auto-généré: %s", path)
 				p.broadcastLog(fmt.Sprintf("📓 Journal sauvegardé: %s", path))
@@ -796,6 +907,15 @@ func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, 
 				log.Printf("[PROCESSOR] ❌ Erreur génération journal: %v", err)
 			}
 			p.journal.Reset()
+		}
+
+		// Also write the raw text to a dedicated file for massive texts
+		if summary, ok := body["result_summary"].(string); ok {
+			os.WriteFile("LIVRE_SF_COMPLET.md", []byte(summary), 0644)
+			log.Printf("[PROCESSOR] 📖 Livre final exporté dans LIVRE_SF_COMPLET.md")
+		} else if result, ok := body["result"].(string); ok {
+			os.WriteFile("LIVRE_SF_COMPLET.md", []byte(result), 0644)
+			log.Printf("[PROCESSOR] 📖 Livre final exporté dans LIVRE_SF_COMPLET.md")
 		}
 
 		return
@@ -806,7 +926,7 @@ func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, 
 			ID:        uuid.New().String(),
 			Timestamp: time.Now().Unix(),
 			From:      ag.ID,
-			To:        ag.ParentID,
+			To:        ag.BubbleID,
 			Type:      pktType,
 		},
 		Body: body,

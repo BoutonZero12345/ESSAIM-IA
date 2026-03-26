@@ -84,9 +84,12 @@ func main() {
 	mongoURI := utils.GetEnv("MONGO_URI", "mongodb://localhost:27017")
 	geminiKey := utils.GetEnv("GEMINI_API_KEY", "")
 	geminiModel := utils.GetEnv("GEMINI_MODEL", "gemini-2.5-pro")
-	globalBudget := 100000.0
+	globalBudget := 1000000000.0 // Default 1 Billion tokens
 	if envBudget := utils.GetEnv("GLOBAL_BUDGET", ""); envBudget != "" {
 		if parsed, err := strconv.ParseFloat(envBudget, 64); err == nil {
+			if parsed < 1000000 {
+				parsed = parsed * 1000000 // Convert what user thought was euros into tokens
+			}
 			globalBudget = parsed
 		}
 	}
@@ -214,7 +217,10 @@ func main() {
 			return
 		}
 		if req.Budget <= 0 {
-			req.Budget = globalBudget
+			req.Budget = 5000000.0 // Default 5 Million tokens for a single mission if none specified
+		} else {
+			// User inputted budget in euros, scale up to tokens (approx 1M tokens per euro)
+			req.Budget = req.Budget * 1000000
 		}
 
 		log.Printf("[API] Creating Alpha agent for objective: %s", req.Objective)
@@ -222,15 +228,15 @@ func main() {
 
 		// Create the Alpha agent (root of the graph)
 		alpha := &agent.Agent{
-			ID:          uuid.New().String(),
-			ParentID:    "",
-			Role:        agent.RoleArchitect,
-			Status:      agent.StatusBorn,
-			Budget:      req.Budget,
-			Memory:      make([]agent.Message, 0),
-			ChildrenIDs: make([]string, 0),
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ID:         uuid.New().String(),
+			BubbleID:   "", // Root architect stands alone initially
+			Role:       agent.RoleArchitect,
+			Status:     agent.StatusBorn,
+			Budget:     req.Budget,
+			RetryCount: 0,
+			Memory:     make([]agent.Message, 0),
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
 		}
 
 		// Register in graph

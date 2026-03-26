@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"fmt"
 	"sync"
 
 	"essaim-backend/internal/domain/agent"
@@ -10,51 +9,72 @@ import (
 // MaxDepth is the maximum allowed depth for the agent graph (Architecture Rule §9.2).
 const MaxDepth = 6
 
-// Node represents a single node in the directed agent graph.
+// Node represents a single agent in the network.
 type Node struct {
-	Agent    *agent.Agent
-	Children []*Node
-	Depth    int
+	Agent *agent.Agent
 }
 
-// Registry manages the in-memory graph of all active agent nodes.
-// It provides thread-safe operations for node lookup, insertion, and deletion.
+// Bubble represents a group of agents centered around a Postier.
+type Bubble struct {
+	ID        string
+	PostierID string
+	AgentIDs  []string
+}
+
+// Registry manages the in-memory graph of all active bubbles and agent nodes.
+// It provides thread-safe operations for lookup, insertion, and deletion.
 type Registry struct {
-	mu    sync.RWMutex
-	nodes map[string]*Node // key = Agent.ID
+	mu      sync.RWMutex
+	nodes   map[string]*Node   // key = Agent.ID
+	bubbles map[string]*Bubble // key = BubbleID
 }
 
-// NewRegistry creates an empty node registry.
+// NewRegistry creates an empty node and bubble registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		nodes: make(map[string]*Node),
+		nodes:   make(map[string]*Node),
+		bubbles: make(map[string]*Bubble),
 	}
 }
 
-// Register adds a new agent node to the graph, linked to its parent.
-// Returns an error if the max depth would be exceeded.
+// Register adds a new agent node to the graph and assigns it to its bubble.
 func (r *Registry) Register(ag *agent.Agent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	depth := 0
-	if ag.ParentID != "" {
-		parent, ok := r.nodes[ag.ParentID]
-		if !ok {
-			return fmt.Errorf("parent node %s not found in registry", ag.ParentID)
-		}
-		depth = parent.Depth + 1
-		if depth > MaxDepth {
-			return fmt.Errorf("max depth %d exceeded for agent %s (depth=%d)", MaxDepth, ag.ID, depth)
-		}
-		parent.Children = append(parent.Children, &Node{Agent: ag, Depth: depth})
+	// Add node
+	r.nodes[ag.ID] = &Node{
+		Agent: ag,
 	}
 
-	r.nodes[ag.ID] = &Node{
-		Agent:    ag,
-		Children: make([]*Node, 0),
-		Depth:    depth,
+	// Add to bubble if it has one
+	if ag.BubbleID != "" {
+		bubble, exists := r.bubbles[ag.BubbleID]
+		if !exists {
+			bubble = &Bubble{
+				ID:       ag.BubbleID,
+				AgentIDs: []string{},
+			}
+			r.bubbles[ag.BubbleID] = bubble
+		}
+
+		if ag.Role == agent.RolePostier {
+			bubble.PostierID = ag.ID
+		}
+
+		// Avoid duplicate insertions (shouldn't happen but defensive)
+		found := false
+		for _, id := range bubble.AgentIDs {
+			if id == ag.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			bubble.AgentIDs = append(bubble.AgentIDs, ag.ID)
+		}
 	}
+
 	return nil
 }
 
@@ -65,26 +85,46 @@ func (r *Registry) Get(agentID string) *Node {
 	return r.nodes[agentID]
 }
 
-// Remove deletes a node and recursively removes all its descendants.
-// Returns a list of all removed agent IDs.
+// GetBubble returns the bubble details for a given BubbleID.
+func (r *Registry) GetBubble(bubbleID string) *Bubble {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.bubbles[bubbleID]
+}
+
+// Remove deletes an agent from the node map and its bubble.
+// If the agent is a Postier, we might want to kill the whole bubble (returns the full list).
+// For now, let's just remove the agent and return its ID. The logic for wiping a whole bubble
+// belongs in the Lifecycle manager, knowing who is who.
 func (r *Registry) Remove(agentID string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.removeRecursive(agentID)
-}
 
-func (r *Registry) removeRecursive(agentID string) []string {
 	node, ok := r.nodes[agentID]
 	if !ok {
 		return nil
 	}
 
-	removed := []string{agentID}
-	for _, child := range node.Children {
-		removed = append(removed, r.removeRecursive(child.Agent.ID)...)
+	if node.Agent.BubbleID != "" {
+		if bubble, exists := r.bubbles[node.Agent.BubbleID]; exists {
+			// Remove agent ID from bubble list
+			var newIDs []string
+			for _, id := range bubble.AgentIDs {
+				if id != agentID {
+					newIDs = append(newIDs, id)
+				}
+			}
+			bubble.AgentIDs = newIDs
+
+			// Optional: delete bubble if empty
+			if len(bubble.AgentIDs) == 0 {
+				delete(r.bubbles, node.Agent.BubbleID)
+			}
+		}
 	}
+
 	delete(r.nodes, agentID)
-	return removed
+	return []string{agentID}
 }
 
 // AllNodes returns a snapshot of all current nodes (for monitoring).

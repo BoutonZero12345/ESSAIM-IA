@@ -19,10 +19,11 @@
   - Créer `/backend/internal/domain/message/types.go` (Struct Packet, Header, Body).
   - Créer `/backend/internal/domain/graph/node.go`.
   - *Vérification :* Le code doit compiler (`go build ./...`).
-- [x] **2. Core Logic (Dispatcher & Economy)**
+- [x] **2. Core Logic (Dispatcher, Routing & Economy)**
 
   - Créer `/backend/internal/core/economy/budget.go` (Gestion Tokens).
   - Créer `/backend/internal/core/orchestrator/dispatcher.go` (Worker Pool, Channels).
+  - Créer `/backend/internal/core/routing/bubble.go` (Gestion du Postier et des Résumeurs dans la bulle).
   - Implémenter le "Kill Switch" si budget <= 0.
 
 ## PHASE 2 : Infrastructure
@@ -53,7 +54,8 @@
 
 - [x] **7. System Prompts**
   - Dans `/backend/internal/domain/agent`, implémenter la génération dynamique du Prompt.
-  - Injecter : ID, Rôle, Budget.
+  - Injecter : ID, Rôle, BubbleID, Budget.
+  - Créer les templates spécifiques : Architecte, Postier, Résumeur, Worker, Critique.
   - Forcer le format JSON STRICT dans le prompt système.
 
 ## PHASE 5 : Finalisation

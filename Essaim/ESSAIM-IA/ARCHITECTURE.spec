@@ -5,11 +5,13 @@
 ## 1. VISION DU SYSTÈME
 ESSAIM IA est un système multi-agents autonome basé sur le modèle "Actor".
 L'utilisateur fournit un objectif unique (ex: "Créer un rapport sur X").
-Le système déploie dynamiquement un graphe orienté d'agents (Goroutines) qui :
+Le système déploie dynamiquement des **Bulles d'agents** (Goroutines) qui :
 1.  Décomposent la tâche (Architecte).
-2.  Exécutent les sous-tâches (Workers).
-3.  Valident les résultats (Critiques).
-4.  S'auto-détruisent une fois la tâche accomplie.
+2.  S'organisent en groupes autonomes autour d'un **Postier** (Routeur).
+3.  Exécutent les sous-tâches (Workers) en communiquant uniquement avec le Postier.
+4.  Condensent l'information via des **Résumeurs** pour la rendre digeste.
+5.  Valident les résultats (Critiques).
+6.  S'auto-détruisent une fois la tâche accomplie.
 
 L'interaction humaine est strictement limitée à l'observation (Monitoring) et à l'arrêt d'urgence (Kill Switch).
 
@@ -34,8 +36,8 @@ Toute déviation de cette stack est interdite.
 ## 3. LES 5 RÈGLES D'OR (THE LAWS)
 1.  **SILENCE RADIO :** Les agents ne "chattent" pas. Ils échangent des objets JSON stricts. Tout texte libre hors JSON est considéré comme une erreur système.
 2.  **ÉCONOMIE FINIE :** Chaque agent naît avec un budget de tokens. Si le budget est épuisé, l'agent meurt immédiatement. Pas de dette.
-3.  **HIERARCHIE STRICTE :** Un agent ne parle qu'à son PARENT (Report) ou à ses ENFANTS (Command). Pas de communication horizontale (sauf via mémoire partagée).
-4.  **STATELESS LOGIC :** Un agent peut être tué et redémarré n'importe quand. Son état doit être persisté dans MongoDB à chaque étape clé.
+3.  **ROUTAGE PAR POSTIER :** Un agent ne parle qu'à son Postier de Bulle. Pas de communication horizontale ni de communication directe avec l'Architecte (sauf via les condensés du Résumeur).
+4.  **STATELESS MAIS VALORISÉ :** Les agents ont de la valeur. Ils ne sont tués qu'après de multiples échecs (Retry limit) ou fin de tâche. L'état est persisté dans MongoDB à chaque étape clé pour la résilience.
 5.  **NON-BLOCKING I/O :** Aucun appel API (Gemini/Claude) ne doit bloquer le thread principal. Utilisation obligatoire de Worker Pools.
 
 ## 4. ARBORESCENCE DES FICHIERS CIBLE
@@ -62,6 +64,7 @@ Le projet doit respecter scrupuleusement cette structure pour faciliter la navig
 │   │   ├── /core               # ORCHESTRATION
 │   │   │   ├── /dispatcher     # Worker Pool (Gère les Goroutines)
 │   │   │   ├── /lifecycle      # Spawn, Kill, Retry logic
+│   │   │   ├── /routing        # Logique de la Bulle (Postier, Résumeur)
 │   │   │   └── /economy        # Token Bucket Algorithm
 │   │   │
 │   │   ├── /infrastructure     # EXTERNAL WORLD
@@ -88,12 +91,11 @@ Chaque Goroutine active possède cette structure en mémoire.
 ```go
 type Agent struct {
     ID          string             `bson:"_id" json:"id"`
-    ParentID    string             `bson:"parent_id" json:"parentId"`
-    Role        string             `bson:"role" json:"role"` // ex: "ARCHITECT", "CODER", "CRITIC"
+    BubbleID    string             `bson:"bubble_id" json:"bubbleId"` // Appartenance à une bulle
+    Role        string             `bson:"role" json:"role"` // "ARCHITECT", "POSTIER", "RESUMEUR", "WORKER", "CRITIC"
     Status      AgentStatus        `bson:"status" json:"status"`
     Budget      float64            `bson:"budget" json:"budget"` // Restant ($ ou Tokens)
     Memory      []Message          `bson:"memory" json:"memory"` // Context Window (FIFO)
-    ChildrenIDs []string           `bson:"children_ids" json:"childrenIds"`
     CreatedAt   time.Time          `bson:"created_at" json:"createdAt"`
     UpdatedAt   time.Time          `bson:"updated_at" json:"updatedAt"`
 }
@@ -101,9 +103,9 @@ type Agent struct {
 Les transitions d'état sont unidirectionnelles et contrôlées par le Superviseur.
 STATUS_BORN: Vient d'être instancié, pas encore de tâche.
 STATUS_WORKING: En train d'appeler le LLM ou de traiter une réponse.
-STATUS_WAITING: Attend le retour d'un sous-agent (Enfant).
-STATUS_REVIEW: Attend la validation de son travail par un pair/parent.
-STATUS_DEAD: Budget épuisé ou tâche terminée (Garbage Collected).
+STATUS_WAITING: Attend le retour d'un sous-agent (Enfant) ou du Postier.
+STATUS_REVIEW: Attend la validation de son travail par le Critique.
+STATUS_DEAD: Tâche terminée avec succès, Budget épuisé, ou trop d'échecs consécutifs (Retry Limit dépassée). Agent supprimé proprement.
 
 5.3. Persistance (MongoDB Schema)
 Deux collections principales dans la database essaim_db :
@@ -136,14 +138,14 @@ JSON
   }
 }
 6.2. Types de Messages Autorisés (Enum)
-COMMANDES (Parent -> Enfant)
+COMMANDES (Vers les Workers)
 CMD_TASK: "Exécute cette instruction précise."
 CMD_KILL: "Arrêt immédiat (Budget dépassé ou stratégie changée)."
 CMD_WIPE: "Oublie ton contexte actuel."
-DEMANDES (Enfant -> Parent)
-REQ_SPAWN: "J'ai besoin d'aide, je veux créer un sous-agent."
+DEMANDES (Worker -> Postier)
+REQ_RESUME: "J'ai besoin qu'on me résume ces infos."
 REQ_BUDGET: "J'ai besoin de plus de tokens."
-RAPPORTS (Enfant -> Parent)
+RAPPORTS (Worker -> Postier)
 RPT_DONE: "Tâche terminée, voici le résultat JSON."
 RPT_FAIL: "Échec critique (API Error ou Logic Loop)."
 RPT_PROGRESS: "J'en suis à 50%."
@@ -187,51 +189,52 @@ L'IA ne doit jamais être "créative" sur la forme, seulement sur le fond. Le re
 ### 8.1. Le "Master Prompt" (Injecté dans chaque appel)
 Chaque requête envoyée à Gemini/Claude doit commencer par ce bloc inamovible :
 
-> "TU N'ES PAS UN ASSISTANT. TU ES UN NŒUD DE CALCUL DANS LE GRAPHE 'ESSAIM'.
+> TU N'ES PAS UN ASSISTANT. TU ES UN NŒUD DE CALCUL DANS LE GRAPHE 'ESSAIM'.
 > TON ID : {{AGENT_ID}}
 > TON RÔLE : {{AGENT_ROLE}}
-> TON PARENT : {{PARENT_ID}}
+> TA BULLE : {{BUBBLE_ID}}
 >
 > RÈGLES IMPÉRATIVES :
 > 1.  RÉPOND UNIQUEMENT EN JSON STRICT. Aucun texte avant ou après.
-> 2.  Tu ne parles jamais à l'utilisateur final, seulement à ton Parent ou tes Enfants.
-> 3.  Si la tâche est trop complexe (> 3 sous-étapes), tu DOIS générer un JSON de type `REQ_SPAWN` pour déléguer.
+> 2.  Tu ne parles jamais à l'utilisateur final, seulement à ton Postier (Routeur Central).
+> 3.  Si la tâche est très complexe, signale-le au Postier via `REQ_RESUME` ou demande une restructuration.
 > 4.  Si tu as fini, génère un JSON `RPT_DONE`.
 > 5.  Si tu manques d'infos, génère un JSON `REQ_INFO`.
 >
 > FORMAT DE TA RÉPONSE ATTENDU :
 > {
->   "action": "SPAWN | WORK | REPORT",
+>   "action": "WORK | REPORT | RESUME",
 >   "payload": { ... }
 > }"
 
 ### 8.2. Spécialisation des Rôles
 - **ARCHITECT (Le Cerveau) :**
-  - *Mission:* Analyser l'input utilisateur, définir la stratégie, créer les Managers.
-  - *Bias:* High Logic, Low Creativity.
+  - *Mission:* Analyser l'input, définir la stratégie, initier la création des bulles (Postiers). Lit uniquement les condensés.
+- **POSTIER (Le Routeur Central) :**
+  - *Mission:* Intercepter les messages de la bulle. Décider de garder, distribuer ou faire résumer l'info.
+- **RESUMEUR (Le Digesteur) :**
+  - *Mission:* Condenser la donnée brute (de plusieurs Workers ou d'une bulle entière) pour éviter la surcharge cognitive.
 - **WORKER (Les Mains) :**
-  - *Mission:* Exécuter une tâche atomique (écrire une fonction, résumer un texte).
-  - *Bias:* High Precision, Strict Syntax.
+  - *Mission:* Exécuter une tâche atomique au sein de la bulle. Ne parle qu'au Postier.
 - **CRITIC (Le Garde-Fou) :**
-  - *Mission:* Recevoir le `RPT_DONE` d'un Worker. Le comparer à la consigne initiale.
-  - *Action:* Si score < 90/100, renvoyer un `CMD_RETRY` avec les erreurs listées.
+  - *Mission:* Recevoir le `RPT_DONE` final. Comparer à la consigne. Déclencher un `CMD_RETRY` si < 90/100.
+  - *Règle des tailles :* L'Architecte déploie selon la taille (2 agents: pas de postier ; 3-4: 1 postier ; 5-8: 1 postier + 1 résumeur ; 8-12: 1 postier + 2 résumeurs). Jamais > 12 par bulle.
 
 ## 9. LOGIQUE ÉCONOMIQUE & SÉCURITÉ (THE KILL SWITCH)
 Pour éviter la faillite (boucle infinie d'appels API) et le chaos.
 
 ### 9.1. Le Modèle "Banque Centrale"
 - **Budget Global :** Défini au lancement (ex: 5000 Tokens ou 0.50$).
-- **Héritage Budgétaire :** Quand un Parent crée un Enfant, il lui transfère une partie de SON propre budget restant (ex: 20%).
+- **Héritage Budgétaire :** Quand un Parent crée un Enfant (via le Postier), il lui transfère une partie de SON propre budget restant.
 - **Faillite (Bankruptcy) :**
   - À chaque appel API, le coût est déduit du budget de l'agent.
-  - Si `Agent.Budget <= 0` : Le Backend Go déclenche immédiatement `KillAgent(AgentID)`.
-  - L'agent meurt, ses enfants deviennent orphelins (et sont tués récursivement par le Garbage Collector).
+  - Si `Agent.Budget <= 0` : Le Backend Go déclenche le processus `KillAgent(AgentID)`.
 
-### 9.2. Le "Grim Reaper" (Garbage Collector)
-Un processus Go tourne en arrière-plan toutes les 5 secondes (`time.Ticker`) :
-1.  Vérifie les agents "Zombies" (Dernière activité > 60s). -> **KILL**.
-2.  Vérifie les agents "Pauvres" (Budget <= 0). -> **KILL**.
-3.  Vérifie la profondeur du graphe (Max Depth = 6). Si > 6 -> **KILL**.
+### 9.2. Le "Garbage Collector" Clément (GC)
+Le GC n'est plus un "Grim Reaper" agressif. Les agents ont de la valeur de contexte et un droit à l'erreur. Il tourne en arrière-plan toutes les 15 secondes :
+1.  **Vérifie les agents inactifs :** Si aucune activité > 5 minutes, l'agent entre en statut de veille profonde (sondatage conservé en DB) plutôt que d'être tué arbitrairement.
+2.  **Vérifie la Faillite absolue :** Budget <= 0 -> **KILL**.
+3.  **Vérifie les Boucles d'Échecs :** Si un agent endure > 3 échecs consécutifs (Retry par le Critique), le GC le supprime pour renouveler l'approche. Pas de suppression à la première erreur.
 
 ## 10. FRONTEND & OBSERVABILITÉ (LE COCKPIT)
 L'interface ne sert qu'à visualiser et contrôler. Elle ne contient aucune logique métier.

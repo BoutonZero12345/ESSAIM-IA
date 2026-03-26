@@ -1,0 +1,232 @@
+[SERVER] 2026/02/23 19:06:11 helpers.go:31: [LOGGER] Initialized (stdout + logs\essaim.log)
+[SERVER] 2026/02/23 19:06:11 main.go:76: ========================================
+[SERVER] 2026/02/23 19:06:11 main.go:77:   ESSAIM IA — Backend Server Starting
+[SERVER] 2026/02/23 19:06:11 main.go:78: ========================================
+[SERVER] 2026/02/23 19:06:11 main.go:68: [CONFIG] Loaded 5 variables from ../.env
+[SERVER] 2026/02/23 19:06:11 main.go:98: [CONFIG] MONGO_URI    = mongodb://localhost:27017
+[SERVER] 2026/02/23 19:06:11 main.go:99: [CONFIG] GEMINI_MODEL = gemini-2.0-flash-lite
+[SERVER] 2026/02/23 19:06:11 main.go:100: [CONFIG] PORT         = 8080
+[SERVER] 2026/02/23 19:06:11 main.go:104: [CONFIG] GEMINI_API_KEY = AIzaSyAT...xeZU (loaded)
+[SERVER] 2026/02/23 19:06:11 mongo_repo.go:56: [MONGO] Connected to mongodb://localhost:27017, database: essaim_db
+[SERVER] 2026/02/23 19:06:11 main.go:119: [OK] ✅ MongoDB connected
+[SERVER] 2026/02/23 19:06:11 client.go:114: [LLM] Connected to Gemini model: gemini-2.0-flash-lite
+[SERVER] 2026/02/23 19:06:11 main.go:132: [OK] ✅ Gemini LLM client connected
+[SERVER] 2026/02/23 19:06:11 main.go:143: [OK] ✅ Core components initialized (Registry, BudgetMgr, WebSocket Hub)
+[SERVER] 2026/02/23 19:06:11 main.go:160: [OK] ✅ Journal initialisé (logs/journals/)
+[SERVER] 2026/02/23 19:06:11 main.go:164: [OK] ✅ Agent Processor (brain) initialized
+[SERVER] 2026/02/23 19:06:11 dispatcher.go:78: [DISPATCHER] Started with 20 workers, queue capacity 100000
+[SERVER] 2026/02/23 19:06:11 main.go:169: [OK] ✅ Dispatcher started (50 workers)
+[SERVER] 2026/02/23 19:06:11 main.go:322: ========================================
+[SERVER] 2026/02/23 19:06:11 main.go:323:   ✅ ESSAIM IA Backend READY on :8080
+[SERVER] 2026/02/23 19:06:11 main.go:324:   Routes: /ws, /health, /start
+[SERVER] 2026/02/23 19:06:11 main.go:325: ========================================
+[SERVER] 2026/02/23 19:06:12 main.go:176: [WS] New WebSocket connection attempt from [::1]:51262
+[SERVER] 2026/02/23 19:06:12 hub.go:72: [WS HUB] New client connected (1 total)
+[SERVER] 2026/02/23 19:06:16 main.go:195: [API] POST /start from [::1]:51265
+[SERVER] 2026/02/23 19:06:16 main.go:226: [API] Creating Alpha agent for objective: MISSION CRITIQUE D'ARCHITECTURE "ENTREPRISE GLOBALE" : 
+[SERVER] Tu es le CEO d'ESSAIM-IA. Nous devons valider la résilience du réseau sur une hiérarchie à 5 niveaux et la transmission multiniveaux (Résumeurs et Postiers).
+[SERVER] TON UNIQUE TÂCHE ACTUELLE est de faire UNE ACTION SPAWN pour créer EXACTEMENT 3 sous-agents avec le rôle "DIRECTOR".
+[SERVER] 
+[SERVER] Pour chaque DIRECTOR, donne-lui EXACTEMENT cette instruction stricte copiée-collée :
+[SERVER] "Tu es un Grand Dirigeant. Ta mission est de déléguer via une action SPAWN à EXACTEMENT 5 sous-agents de rôle DIRECTOR (qui agiront comme Sous-Dirigeants). Donne à chacun de ces 5 Sous-Dirigeants l'instruction suivante : 'Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »'."
+[SERVER] 
+[SERVER] Fais ce SPAWN MAINTENANT.
+[SERVER] 2026/02/23 19:06:16 main.go:299: [GENESIS] ✅ Agent Alpha (de1bec30-df66-4e28-9240-b98649e016bd) spawned with objective: MISSION CRITIQUE D'ARCHITECTURE "ENTREPRISE GLOBALE" : 
+[SERVER] Tu es le CEO d'ESSAIM-IA. Nous devons valider la résilience du réseau sur une hiérarchie à 5 niveaux et la transmission multiniveaux (Résumeurs et Postiers).
+[SERVER] TON UNIQUE TÂCHE ACTUELLE est de faire UNE ACTION SPAWN pour créer EXACTEMENT 3 sous-agents avec le rôle "DIRECTOR".
+[SERVER] 
+[SERVER] Pour chaque DIRECTOR, donne-lui EXACTEMENT cette instruction stricte copiée-collée :
+[SERVER] "Tu es un Grand Dirigeant. Ta mission est de déléguer via une action SPAWN à EXACTEMENT 5 sous-agents de rôle DIRECTOR (qui agiront comme Sous-Dirigeants). Donne à chacun de ces 5 Sous-Dirigeants l'instruction suivante : 'Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »'."
+[SERVER] 
+[SERVER] Fais ce SPAWN MAINTENANT.
+[SERVER] 2026/02/23 19:06:16 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent de1bec30 (ARCHITECT)
+[SERVER] 2026/02/23 19:06:16 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent de1bec30 (ARCHITECT)...
+[SERVER] 2026/02/23 19:06:17 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 10s (attempt 1/10)
+[SERVER] 2026/02/23 19:06:38 processor.go:219: [PROCESSOR] ✅ LLM response for de1bec30: 1520 tokens, 21597ms
+[SERVER] 2026/02/23 19:06:38 processor.go:220: [PROCESSOR] 📄 Raw LLM output for de1bec30:
+[SERVER] {
+[SERVER]   "action": "SPAWN",
+[SERVER]   "payload": {
+[SERVER]     "instructions": "MISSION CRITIQUE D'ARCHITECTURE \"ENTREPRISE GLOBALE\" : Nous devons valider la résilience du réseau sur une hiérarchie à 5 niveaux et la transmission multiniveaux (Résumeurs et Postiers).",
+[SERVER]     "agents": [
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es un Grand Dirigeant. Ta mission est de déléguer via une action SPAWN à EXACTEMENT 5 sous-agents de rôle DIRECTOR (qui agiront comme Sous-Dirigeants). Donne à chacun de ces 5 Sous-Dirigeants l'instruction suivante : 'Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »'."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es un Grand Dirigeant. Ta mission est de déléguer via une action SPAWN à EXACTEMENT 5 sous-agents de rôle DIRECTOR (qui agiront comme Sous-Dirigeants). Donne à chacun de ces 5 Sous-Dirigeants l'instruction suivante : 'Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »'."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es un Grand Dirigeant. Ta mission est de déléguer via une action SPAWN à EXACTEMENT 5 sous-agents de rôle DIRECTOR (qui agiront comme Sous-Dirigeants). Donne à chacun de ces 5 Sous-Dirigeants l'instruction suivante : 'Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »'."
+[SERVER]       }
+[SERVER]     ]
+[SERVER]   }
+[SERVER] }
+[SERVER] 2026/02/23 19:06:38 processor.go:275: [PROCESSOR] 🎯 Action: SPAWN (normalized from: SPAWN)
+[SERVER] 2026/02/23 19:06:38 processor.go:486: [PROCESSOR] 🔍 SPAWN payload raw: {
+[SERVER]     "instructions": "MISSION CRITIQUE D'ARCHITECTURE \"ENTREPRISE GLOBALE\" : Nous devons valider la résilience du réseau sur une hiérarchie à 5 niveaux et la transmission multiniveaux (Résumeurs et Postiers).",
+[SERVER]     "agents": [
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es un Grand Dirigeant. Ta mission est de déléguer via une action SPAWN à EXACTEMENT 5 sous-agents de rôle DIRECTOR (qui agiront comme Sous-Dirigeants). Donne à chacun de ces 5 Sous-Dirigeants l'instruction suivante : 'Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »'."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es un Grand Dirigeant. Ta mission est de déléguer via une action SPAWN à EXACTEMENT 5 sous-agents de rôle DIRECTOR (qui agiront comme Sous-Dirigeants). Donne à chacun de ces 5 Sous-Dirigeants l'instruction suivante : 'Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »'."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es un Grand Dirigeant. Ta mission est de déléguer via une action SPAWN à EXACTEMENT 5 sous-agents de rôle DIRECTOR (qui agiront comme Sous-Dirigeants). Donne à chacun de ces 5 Sous-Dirigeants l'instruction suivante : 'Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »'."
+[SERVER]       }
+[SERVER]     ]
+[SERVER]   }
+[SERVER] 2026/02/23 19:06:38 processor.go:699: [PROCESSOR] ⚠ Nested key agents found 3 items but none had task_description, trying generic map parser
+[SERVER] 2026/02/23 19:06:38 processor.go:712: [PROCESSOR] ✅ Parsed 3 subtasks (generic maps in key: agents)
+[SERVER] 2026/02/23 19:06:38 processor.go:492: [PROCESSOR] 🔀 Agent de1bec30 spawning 3 children
+[SERVER] 2026/02/23 19:06:38 processor.go:574: [PROCESSOR] ✅ Spawned child 88015534 (DIRECTOR) for task: Tu es un Grand Dirigeant. Ta mission est de délé
+[SERVER] 2026/02/23 19:06:38 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent 88015534 (DIRECTOR)
+[SERVER] 2026/02/23 19:06:38 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent 88015534 (DIRECTOR)...
+[SERVER] 2026/02/23 19:06:38 processor.go:574: [PROCESSOR] ✅ Spawned child f5cd1727 (DIRECTOR) for task: Tu es un Grand Dirigeant. Ta mission est de délé
+[SERVER] 2026/02/23 19:06:38 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent f5cd1727 (DIRECTOR)
+[SERVER] 2026/02/23 19:06:38 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent f5cd1727 (DIRECTOR)...
+[SERVER] 2026/02/23 19:06:38 processor.go:574: [PROCESSOR] ✅ Spawned child e3310992 (DIRECTOR) for task: Tu es un Grand Dirigeant. Ta mission est de délé
+[SERVER] 2026/02/23 19:06:38 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent e3310992 (DIRECTOR)
+[SERVER] 2026/02/23 19:06:38 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent e3310992 (DIRECTOR)...
+[SERVER] 2026/02/23 19:06:39 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 10s (attempt 1/10)
+[SERVER] 2026/02/23 19:06:41 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 10s (attempt 1/10)
+[SERVER] 2026/02/23 19:06:43 processor.go:219: [PROCESSOR] ✅ LLM response for f5cd1727: 1441 tokens, 5423ms
+[SERVER] 2026/02/23 19:06:43 processor.go:220: [PROCESSOR] 📄 Raw LLM output for f5cd1727:
+[SERVER] {
+[SERVER]   "action": "SPAWN",
+[SERVER]   "payload": {
+[SERVER]     "instructions": "Déléguer la tâche de rédaction de rapports sur la technologie des propulseurs spatiaux à un ensemble de sous-agents.",
+[SERVER]     "agents": [
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       }
+[SERVER]     ]
+[SERVER]   }
+[SERVER] }
+[SERVER] 2026/02/23 19:06:43 processor.go:275: [PROCESSOR] 🎯 Action: SPAWN (normalized from: SPAWN)
+[SERVER] 2026/02/23 19:06:43 processor.go:486: [PROCESSOR] 🔍 SPAWN payload raw: {
+[SERVER]     "instructions": "Déléguer la tâche de rédaction de rapports sur la technologie des propulseurs spatiaux à un ensemble de sous-agents.",
+[SERVER]     "agents": [
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "DIRECTOR",
+[SERVER]         "task": "Tu es Sous-Dirigeant. Fais une action SPAWN pour créer EXACTEMENT 3 sous-agents de rôle MANAGER. Donne à chaque MANAGER l'instruction : « Fais une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux. »."
+[SERVER]       }
+[SERVER]     ]
+[SERVER]   }
+[SERVER] 2026/02/23 19:06:43 processor.go:699: [PROCESSOR] ⚠ Nested key agents found 5 items but none had task_description, trying generic map parser
+[SERVER] 2026/02/23 19:06:43 processor.go:712: [PROCESSOR] ✅ Parsed 5 subtasks (generic maps in key: agents)
+[SERVER] 2026/02/23 19:06:43 processor.go:492: [PROCESSOR] 🔀 Agent f5cd1727 spawning 5 children
+[SERVER] 2026/02/23 19:06:43 processor.go:574: [PROCESSOR] ✅ Spawned child a51491ca (DIRECTOR) for task: Tu es Sous-Dirigeant. Fais une action SPAWN pour c
+[SERVER] 2026/02/23 19:06:43 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent a51491ca (DIRECTOR)
+[SERVER] 2026/02/23 19:06:43 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent a51491ca (DIRECTOR)...
+[SERVER] 2026/02/23 19:06:43 processor.go:574: [PROCESSOR] ✅ Spawned child caae8f8b (DIRECTOR) for task: Tu es Sous-Dirigeant. Fais une action SPAWN pour c
+[SERVER] 2026/02/23 19:06:43 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent caae8f8b (DIRECTOR)
+[SERVER] 2026/02/23 19:06:43 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent caae8f8b (DIRECTOR)...
+[SERVER] 2026/02/23 19:06:43 processor.go:574: [PROCESSOR] ✅ Spawned child bc87d923 (DIRECTOR) for task: Tu es Sous-Dirigeant. Fais une action SPAWN pour c
+[SERVER] 2026/02/23 19:06:43 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent bc87d923 (DIRECTOR)
+[SERVER] 2026/02/23 19:06:43 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent bc87d923 (DIRECTOR)...
+[SERVER] 2026/02/23 19:06:43 processor.go:574: [PROCESSOR] ✅ Spawned child 45b557c7 (DIRECTOR) for task: Tu es Sous-Dirigeant. Fais une action SPAWN pour c
+[SERVER] 2026/02/23 19:06:43 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent 45b557c7 (DIRECTOR)
+[SERVER] 2026/02/23 19:06:43 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent 45b557c7 (DIRECTOR)...
+[SERVER] 2026/02/23 19:06:43 processor.go:574: [PROCESSOR] ✅ Spawned child 6372f0a3 (DIRECTOR) for task: Tu es Sous-Dirigeant. Fais une action SPAWN pour c
+[SERVER] 2026/02/23 19:06:43 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent 6372f0a3 (DIRECTOR)
+[SERVER] 2026/02/23 19:06:43 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent 6372f0a3 (DIRECTOR)...
+[SERVER] 2026/02/23 19:06:45 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 10s (attempt 1/10)
+[SERVER] 2026/02/23 19:06:46 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 10s (attempt 1/10)
+[SERVER] 2026/02/23 19:06:47 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 10s (attempt 1/10)
+[SERVER] 2026/02/23 19:06:47 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 10s (attempt 1/10)
+[SERVER] 2026/02/23 19:06:49 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 10s (attempt 1/10)
+[SERVER] 2026/02/23 19:06:51 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 20s (attempt 2/10)
+[SERVER] 2026/02/23 19:06:58 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 20s (attempt 2/10)
+[SERVER] 2026/02/23 19:06:59 client.go:189: [LLM] ⚠ API error/timeout (googleapi: Error 429: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.), retrying in 20s (attempt 2/10)
+[SERVER] 2026/02/23 19:06:59 processor.go:219: [PROCESSOR] ✅ LLM response for 45b557c7: 1044 tokens, 15903ms
+[SERVER] 2026/02/23 19:06:59 processor.go:220: [PROCESSOR] 📄 Raw LLM output for 45b557c7:
+[SERVER] {
+[SERVER]   "action": "SPAWN",
+[SERVER]   "payload": {
+[SERVER]     "instructions": "Création de trois MANAGERS et déléguer une tâche de création de WORKERS à chacun.",
+[SERVER]     "agents": [
+[SERVER]       {
+[SERVER]         "role": "MANAGER",
+[SERVER]         "task": "Faire une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "MANAGER",
+[SERVER]         "task": "Faire une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "MANAGER",
+[SERVER]         "task": "Faire une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux."
+[SERVER]       }
+[SERVER]     ]
+[SERVER]   }
+[SERVER] }
+[SERVER] 2026/02/23 19:06:59 processor.go:275: [PROCESSOR] 🎯 Action: SPAWN (normalized from: SPAWN)
+[SERVER] 2026/02/23 19:06:59 processor.go:486: [PROCESSOR] 🔍 SPAWN payload raw: {
+[SERVER]     "instructions": "Création de trois MANAGERS et déléguer une tâche de création de WORKERS à chacun.",
+[SERVER]     "agents": [
+[SERVER]       {
+[SERVER]         "role": "MANAGER",
+[SERVER]         "task": "Faire une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "MANAGER",
+[SERVER]         "task": "Faire une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux."
+[SERVER]       },
+[SERVER]       {
+[SERVER]         "role": "MANAGER",
+[SERVER]         "task": "Faire une action SPAWN pour créer EXACTEMENT 8 sous-agents de rôle WORKER. Chaque WORKER a pour tâche de rédiger un rapport très court (1 phrase maximum) sur la technologie des propulseurs spatiaux."
+[SERVER]       }
+[SERVER]     ]
+[SERVER]   }
+[SERVER] 2026/02/23 19:06:59 processor.go:699: [PROCESSOR] ⚠ Nested key agents found 3 items but none had task_description, trying generic map parser
+[SERVER] 2026/02/23 19:06:59 processor.go:712: [PROCESSOR] ✅ Parsed 3 subtasks (generic maps in key: agents)
+[SERVER] 2026/02/23 19:06:59 processor.go:492: [PROCESSOR] 🔀 Agent 45b557c7 spawning 3 children
+[SERVER] 2026/02/23 19:06:59 processor.go:574: [PROCESSOR] ✅ Spawned child 2a222476 (MANAGER) for task: Faire une action SPAWN pour créer EXACTEMENT 8 so
+[SERVER] 2026/02/23 19:06:59 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent 2a222476 (MANAGER)
+[SERVER] 2026/02/23 19:06:59 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent 2a222476 (MANAGER)...
+[SERVER] 2026/02/23 19:06:59 processor.go:574: [PROCESSOR] ✅ Spawned child 60c40193 (MANAGER) for task: Faire une action SPAWN pour créer EXACTEMENT 8 so
+[SERVER] 2026/02/23 19:06:59 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent 60c40193 (MANAGER)
+[SERVER] 2026/02/23 19:06:59 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent 60c40193 (MANAGER)...
+[SERVER] 2026/02/23 19:06:59 processor.go:574: [PROCESSOR] ✅ Spawned child a141c4ae (MANAGER) for task: Faire une action SPAWN pour créer EXACTEMENT 8 so
+[SERVER] 2026/02/23 19:06:59 processor.go:113: [PROCESSOR] 📨 Processing CMD_TASK for agent a141c4ae (MANAGER)
+[SERVER] 2026/02/23 19:06:59 processor.go:165: [PROCESSOR] 🤖 Calling LLM for agent a141c4ae (MANAGER)...

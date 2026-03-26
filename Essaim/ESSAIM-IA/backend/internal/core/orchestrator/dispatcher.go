@@ -12,16 +12,19 @@ import (
 )
 
 // WorkerCount defines the number of concurrent API workers (Architecture §7).
-const WorkerCount = 50
+const WorkerCount = 20
 
 // QueueSize defines the buffered channel capacity (Architecture §7).
-const QueueSize = 1000
+const QueueSize = 100000
 
-// ZombieTimeout defines the inactivity threshold for the Grim Reaper (§9.2).
-const ZombieTimeout = 60 * time.Second
+// InactiveTimeout defines the inactivity threshold for placing an agent in deep sleep.
+const InactiveTimeout = 5 * time.Minute
 
-// ReaperInterval defines how often the Grim Reaper runs (§9.2).
-const ReaperInterval = 5 * time.Second
+// ReaperInterval defines how often the Garbage Collector runs (§9.2).
+const ReaperInterval = 15 * time.Second
+
+// MaxRetryCount is the maximum number of times an agent can fail before termination.
+const MaxRetryCount = 3
 
 // PacketHandler is a function that processes a received packet.
 type PacketHandler func(pkt message.Packet) error
@@ -143,7 +146,7 @@ func (d *Dispatcher) grimReaper() {
 	}
 }
 
-// reap checks all agents for zombie/bankrupt/depth-exceeded conditions.
+// reap checks all agents for inactivity/bankrupt/retry limits conditions.
 func (d *Dispatcher) reap() {
 	now := time.Now()
 	nodes := d.registry.AllNodes()
@@ -157,21 +160,28 @@ func (d *Dispatcher) reap() {
 		shouldKill := false
 		reason := ""
 
-		// Rule 1: Zombie detection — DISABLED (laisse les agents travailler)
-		// On ne tue plus les agents inactifs, ils peuvent attendre des réponses LLM lentes
-		_ = now // keep import
-
-		// Rule 2: Budget exhausted — DISABLED (on laisse les agents continuer)
-		// On calibrera les budgets plus tard
-
-		// Rule 3: Depth exceeded (max depth = 6)
-		if node.Depth > graph.MaxDepth {
-			shouldKill = true
-			reason = "depth exceeded"
+		// Rule 1: Inactivity Veille Profonde (clément)
+		if ag.Status != agent.StatusWorking && now.Sub(ag.UpdatedAt) > InactiveTimeout {
+			log.Printf("[GARBAGE COLLECTOR] Agent %s is inactive, putting to sleep (Not killed)", ag.ID)
+			// TODO: Update state to StatusWaiting/Sleep in DB if necessary
 		}
 
+		// Rule 2: Budget exhausted
+		if ag.IsBankrupt() {
+			shouldKill = true
+			reason = "bankruptcy (budget exhausted)"
+		}
+
+		// Rule 3: Max retry count exceeded
+		if ag.RetryCount > MaxRetryCount {
+			shouldKill = true
+			reason = "max retry count exceeded (> 3)"
+		}
+
+		// (Removed depth exceeded check as Bubbles are inherently flatter)
+
 		if shouldKill {
-			log.Printf("[GRIM REAPER] Killing agent %s (%s): %s", ag.ID, ag.Role, reason)
+			log.Printf("[GARBAGE COLLECTOR] Killing agent %s (%s): %s", ag.ID, ag.Role, reason)
 			removed := d.registry.Remove(ag.ID)
 			for _, id := range removed {
 				d.budgetMgr.RemoveAgent(id)

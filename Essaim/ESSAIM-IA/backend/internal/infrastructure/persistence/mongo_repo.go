@@ -59,9 +59,9 @@ func NewMongoRepo(ctx context.Context, uri string) (*MongoRepo, error) {
 
 // ensureIndexes creates required indexes per Architecture §5.3.
 func (r *MongoRepo) ensureIndexes(ctx context.Context) error {
-	// agents_snapshot indexes: parent_id, status
+	// agents_snapshot indexes: bubble_id, status
 	agentIndexes := []mongo.IndexModel{
-		{Keys: bson.D{{Key: "parent_id", Value: 1}}},
+		{Keys: bson.D{{Key: "bubble_id", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}}},
 	}
 	if _, err := r.agents.Indexes().CreateMany(ctx, agentIndexes); err != nil {
@@ -102,9 +102,9 @@ func (r *MongoRepo) GetAgent(ctx context.Context, agentID string) (*agent.Agent,
 	return &ag, nil
 }
 
-// GetAgentsByParent retrieves all children of a given parent agent.
-func (r *MongoRepo) GetAgentsByParent(ctx context.Context, parentID string) ([]*agent.Agent, error) {
-	filter := bson.M{"parent_id": parentID}
+// GetAgentsByBubble retrieves all agents associated with a given bubble.
+func (r *MongoRepo) GetAgentsByBubble(ctx context.Context, bubbleID string) ([]*agent.Agent, error) {
+	filter := bson.M{"bubble_id": bubbleID}
 	cursor, err := r.agents.Find(ctx, filter)
 	if err != nil {
 		return nil, err

@@ -10,13 +10,15 @@ const (
 	CmdWipe PacketType = "CMD_WIPE"
 )
 
-// Requests (Child -> Parent)
+// Requests (Worker -> Postier)
 const (
 	ReqSpawn  PacketType = "REQ_SPAWN"
+	ReqResume PacketType = "REQ_RESUME"
+	ReqInfo   PacketType = "REQ_INFO"
 	ReqBudget PacketType = "REQ_BUDGET"
 )
 
-// Reports (Child -> Parent)
+// Reports (Worker -> Postier)
 const (
 	RptDone     PacketType = "RPT_DONE"
 	RptFail     PacketType = "RPT_FAIL"
