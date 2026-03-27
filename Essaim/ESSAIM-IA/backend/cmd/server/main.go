@@ -225,6 +225,7 @@ func main() {
 
 		log.Printf("[API] Creating Alpha agent for objective: %s", req.Objective)
 		missionJournal.SetObjective(req.Objective)
+		processor.SetObjective(req.Objective) // reset stats for this mission
 
 		// Create the Alpha agent (root of the graph)
 		alpha := &agent.Agent{
