@@ -14,11 +14,43 @@ type Node struct {
 	Agent *agent.Agent
 }
 
-// Bubble represents a group of agents centered around a Postier.
+// Bubble represents a closed group of agents centered around a Postier.
+// The group is "closed": the parent is NOT notified until ALL workers are done.
 type Bubble struct {
-	ID        string
-	PostierID string
-	AgentIDs  []string
+	ID            string
+	ParentAgentID string   // Who to notify when the bubble is complete
+	PostierID     string   // The central Postier agent (may be empty for small groups)
+	AgentIDs      []string // All member agent IDs (workers + postier)
+	WorkerCount   int      // Total number of workers expected
+	WorkersDone   int      // How many workers have reported done
+	WorkResults   []string // Accumulated results from workers
+}
+
+// IsComplete returns true when all workers have reported done.
+func (b *Bubble) IsComplete() bool {
+	return b.WorkerCount > 0 && b.WorkersDone >= b.WorkerCount
+}
+
+// ResumeurCount returns how many Résumeurs this bubble needs based on its size.
+// Rules from BROUILLON.md:
+//   - <= 2  : no Postier, no Resumeur (direct parent reporting)
+//   - 3-4   : 1 Postier, 0 Resumeur
+//   - 5-8   : 1 Postier, 1 Resumeur
+//   - 8-12  : 1 Postier, 2 Resumeurs
+func ResumeurCount(workerCount int) int {
+	switch {
+	case workerCount <= 4:
+		return 0
+	case workerCount <= 8:
+		return 1
+	default:
+		return 2
+	}
+}
+
+// NeedsPostier returns true if a bubble of this size should have a Postier.
+func NeedsPostier(workerCount int) bool {
+	return workerCount >= 3
 }
 
 // Registry manages the in-memory graph of all active bubbles and agent nodes.
@@ -78,6 +110,49 @@ func (r *Registry) Register(ag *agent.Agent) error {
 	return nil
 }
 
+// RegisterBubble explicitly creates a bubble with its parent and worker count.
+// This must be called BEFORE spawning workers so the bubble context is established.
+func (r *Registry) RegisterBubble(bubbleID, parentAgentID string, workerCount int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	bubble, exists := r.bubbles[bubbleID]
+	if !exists {
+		bubble = &Bubble{
+			ID:       bubbleID,
+			AgentIDs: []string{},
+		}
+		r.bubbles[bubbleID] = bubble
+	}
+	bubble.ParentAgentID = parentAgentID
+	bubble.WorkerCount = workerCount
+	bubble.WorkersDone = 0
+	bubble.WorkResults = make([]string, 0, workerCount)
+}
+
+// RecordWorkerDone records a worker completing its task within a bubble.
+// Returns (allDone bool, collected results) — allDone is true when the bubble is fully complete.
+func (r *Registry) RecordWorkerDone(bubbleID, result string) (bool, []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	bubble, exists := r.bubbles[bubbleID]
+	if !exists {
+		return false, nil
+	}
+
+	bubble.WorkersDone++
+	bubble.WorkResults = append(bubble.WorkResults, result)
+
+	if bubble.IsComplete() {
+		// Return a copy of results
+		results := make([]string, len(bubble.WorkResults))
+		copy(results, bubble.WorkResults)
+		return true, results
+	}
+	return false, nil
+}
+
 // Get returns the node for the given agent ID, or nil if not found.
 func (r *Registry) Get(agentID string) *Node {
 	r.mu.RLock()
@@ -93,9 +168,6 @@ func (r *Registry) GetBubble(bubbleID string) *Bubble {
 }
 
 // Remove deletes an agent from the node map and its bubble.
-// If the agent is a Postier, we might want to kill the whole bubble (returns the full list).
-// For now, let's just remove the agent and return its ID. The logic for wiping a whole bubble
-// belongs in the Lifecycle manager, knowing who is who.
 func (r *Registry) Remove(agentID string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()

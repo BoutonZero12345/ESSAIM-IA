@@ -263,10 +263,146 @@ func (p *Processor) handleTask(ag *agent.Agent, pkt message.Packet) error {
 }
 
 // handleChildReport processes RPT_DONE / RPT_FAIL from a child agent.
-// When all children are done, the parent calls the LLM to synthesize results.
-func (p *Processor) handleChildReport(parent *agent.Agent, pkt message.Packet) error {
+// It routes differently depending on whether the destination is a Postier or a direct parent.
+func (p *Processor) handleChildReport(receiver *agent.Agent, pkt message.Packet) error {
 	childID := pkt.Head.From
-	log.Printf("[PROCESSOR] 📩 Parent %s received %s from child %s", parent.ID[:8], pkt.Head.Type, childID[:8])
+	log.Printf("[PROCESSOR] 📩 %s (%s) received %s from child %s", receiver.ID[:8], receiver.Role, pkt.Head.Type, childID[:8])
+
+	// PATH A: The receiver is a Postier — use the closed-group (Bulle) aggregation path.
+	if receiver.Role == agent.RolePostier {
+		return p.handlePostierReport(receiver, pkt)
+	}
+
+	// PATH B: Small group (<=2 workers) — no Postier, direct parent aggregation (legacy path).
+	return p.handleDirectParentReport(receiver, pkt)
+}
+
+// handlePostierReport is called when a Worker reports to its Postier.
+// The Postier collects results and triggers the Résumeur when the bubble is complete.
+func (p *Processor) handlePostierReport(postier *agent.Agent, pkt message.Packet) error {
+	childID := pkt.Head.From
+
+	// Extract the worker result text
+	resultJSON, _ := json.MarshalIndent(pkt.Body, "", "  ")
+	childResultText := extractResultText(resultJSON)
+
+	log.Printf("[POSTIER] 📬 Postier %s received result from Worker %s (bubble: %s)", postier.ID[:8], childID[:8], postier.BubbleID)
+	p.broadcastLog(fmt.Sprintf("📬 Postier %s : résultat reçu de Worker %s", postier.ID[:8], childID[:8]))
+
+	// Record the done worker in the bubble registry
+	allDone, results := p.registry.RecordWorkerDone(postier.BubbleID, childResultText)
+
+	if !allDone {
+		bubble := p.registry.GetBubble(postier.BubbleID)
+		var remaining int
+		if bubble != nil {
+			remaining = bubble.WorkerCount - bubble.WorkersDone
+		}
+		p.broadcastLog(fmt.Sprintf("⏳ Postier %s attend %d workers restants...", postier.ID[:8], remaining))
+		return nil
+	}
+
+	// ALL workers done — trigger synthesis
+	log.Printf("[POSTIER] ✅ Bubble %s complete (%d workers). Triggering synthesis.", postier.BubbleID, len(results))
+	p.broadcastLog(fmt.Sprintf("✅ Bulle fermée ! %d workers terminés — démarrage de la synthèse...", len(results)))
+
+	// Get the parent agent ID from the bubble
+	bubble := p.registry.GetBubble(postier.BubbleID)
+	if bubble == nil {
+		log.Printf("[POSTIER] ❌ Bubble %s not found after completion — cannot escalate", postier.BubbleID)
+		return fmt.Errorf("bubble %s not found", postier.BubbleID)
+	}
+	parentAgentID := bubble.ParentAgentID
+
+	// Journal: record synthesis trigger
+	if p.journal != nil {
+		p.journal.Record(postier.ID, string(agent.RolePostier), postier.BubbleID, journal.EntrySynthesis,
+			fmt.Sprintf("Bulle fermée. %d workers terminés. Démarrage synthèse vers parent %s.", len(results), parentAgentID[:8]))
+	}
+
+	// Run Résumeur(s) according to group-size rules
+	numWorkers := len(results)
+	var finalSummary string
+
+	switch {
+	case numWorkers <= 4:
+		// 3-4 workers: Postier only, no Résumeur — direct concatenation
+		log.Printf("[POSTIER] 🔄 %d workers (<=4) — no Résumeur, direct concatenation", numWorkers)
+		p.broadcastLog(fmt.Sprintf("🔄 %d workers — concaténation directe (pas de Résumeur)", numWorkers))
+		for idx, res := range results {
+			finalSummary += fmt.Sprintf("\n\n--- WORKER %d ---\n\n%s", idx+1, res)
+		}
+
+	case numWorkers <= 8:
+		// 5-8 workers: 1 Résumeur
+		log.Printf("[POSTIER] 🔄 %d workers (5-8) — invoking 1 Résumeur", numWorkers)
+		p.broadcastLog(fmt.Sprintf("🔄 %d workers — appel de 1 Résumeur...", numWorkers))
+		var allText string
+		for idx, res := range results {
+			allText += fmt.Sprintf("\n\n--- WORKER %d ---\n\n%s", idx+1, res)
+		}
+		finalSummary = p.callResumeur(postier, allText)
+
+	default:
+		// 9-12 workers: 2 Résumeurs (applied to each half)
+		log.Printf("[POSTIER] 🔄 %d workers (>8) — invoking 2 Résumeurs", numWorkers)
+		p.broadcastLog(fmt.Sprintf("🔄 %d workers — appel de 2 Résumeurs séquentiels...", numWorkers))
+		half := numWorkers / 2
+		var part1, part2 string
+		for idx, res := range results[:half] {
+			part1 += fmt.Sprintf("\n\n--- WORKER %d ---\n\n%s", idx+1, res)
+		}
+		for idx, res := range results[half:] {
+			part2 += fmt.Sprintf("\n\n--- WORKER %d ---\n\n%s", half+idx+1, res)
+		}
+		sum1 := p.callResumeur(postier, part1)
+		sum2 := p.callResumeur(postier, part2)
+		finalSummary = fmt.Sprintf("=== SYNTHÈSE PARTIE 1 ===\n%s\n\n=== SYNTHÈSE PARTIE 2 ===\n%s", sum1, sum2)
+	}
+
+	// Find the parent node and escalate
+	parentNode := p.registry.Get(parentAgentID)
+	if parentNode == nil {
+		log.Printf("[POSTIER] ❌ Parent agent %s not found — escalating to frontend only", parentAgentID[:8])
+		p.wsHub.Broadcast(ws.Event{
+			Type: ws.EventSystemAlert,
+			Payload: map[string]interface{}{
+				"message": fmt.Sprintf("Bulle %s terminée (parent introuvable)", postier.BubbleID),
+				"result":  finalSummary,
+			},
+		})
+		return nil
+	}
+
+	// Send RPT_DONE to the parent via the dispatcher
+	p.broadcastLog(fmt.Sprintf("⬆️ Postier %s remonte la synthèse au parent %s (%s)", postier.ID[:8], parentAgentID[:8], parentNode.Agent.Role))
+	reportPkt := message.Packet{
+		Head: message.Header{
+			ID:        uuid.New().String(),
+			Timestamp: time.Now().Unix(),
+			From:      postier.ID,
+			To:        parentAgentID,
+			Type:      message.RptDone,
+		},
+		Body: map[string]interface{}{
+			"result_summary": finalSummary,
+			"from_bubble":    postier.BubbleID,
+			"worker_count":   numWorkers,
+		},
+	}
+	p.dispatch.Enqueue(reportPkt)
+
+	// Mark Postier as done
+	postier.Status = agent.StatusDead
+	postier.UpdatedAt = time.Now()
+	p.broadcastState(postier)
+	return nil
+}
+
+// handleDirectParentReport handles child reports for small groups (<=2 workers) without a Postier.
+// This is the legacy path for tiny delegations that don't need a routing hub.
+func (p *Processor) handleDirectParentReport(parent *agent.Agent, pkt message.Packet) error {
+	childID := pkt.Head.From
 
 	// Store child result in parent memory
 	resultJSON, _ := json.MarshalIndent(pkt.Body, "", "  ")
@@ -275,50 +411,6 @@ func (p *Processor) handleChildReport(parent *agent.Agent, pkt message.Packet) e
 		Content: fmt.Sprintf("[CHILD_REPORT from %s (%s)]:\n%s", childID[:8], pkt.Head.Type, string(resultJSON)),
 	})
 	parent.UpdatedAt = time.Now()
-
-	// Get bubble agents
-	b := p.registry.GetBubble(parent.ID)
-	var bubbleIDs []string
-	if b != nil {
-		bubbleIDs = b.AgentIDs
-	}
-
-	// --- POSTIER ROUTING (Horizontal) ---
-	// Extract raw text to distribute
-	var childResultText string
-	var parsedRes map[string]interface{}
-	if err := json.Unmarshal([]byte(resultJSON), &parsedRes); err == nil {
-		if res, ok := parsedRes["result"].(string); ok {
-			childResultText = res
-		} else if sum, ok := parsedRes["result_summary"].(string); ok {
-			childResultText = sum
-		} else {
-			childResultText = string(resultJSON)
-		}
-	} else {
-		childResultText = string(resultJSON)
-	}
-
-	// Distribute to living siblings
-	for _, cid := range bubbleIDs {
-		if cid == childID || cid == parent.ID {
-			continue
-		}
-		siblingNode := p.registry.Get(cid)
-		if siblingNode != nil && siblingNode.Agent.Status != agent.StatusDead {
-			siblingNode.Agent.Memory = append(siblingNode.Agent.Memory, agent.Message{
-				Role:    "user",
-				Content: fmt.Sprintf("==== CONTEXTE D'ENTRÉE SUPPLÉMENTAIRE ====\nUn agent de ton groupe vient de terminer son travail. Voici sa production pour t'aider dans ta tâche :\n%s", childResultText),
-			})
-			if p.repo != nil {
-				p.repo.UpsertAgent(p.ctx, siblingNode.Agent)
-			}
-			log.Printf("[POSTIER] 📬 Context injected from %s to sibling %s", childID[:8], cid[:8])
-		}
-	}
-	// ------------------------------------
-
-	// Thread-safe trigger for Synthesis once all spawned children complete
 	parent.SubtasksPending--
 
 	if p.repo != nil {
@@ -330,75 +422,25 @@ func (p *Processor) handleChildReport(parent *agent.Agent, pkt message.Packet) e
 		return nil
 	}
 	if parent.SubtasksPending < 0 {
-		// Prevent cascading resumeur avalanche
 		return nil
 	}
 
-	childResults := []string{}
-	// Once all children are done, extract their ACTUAL final reports from the parent's memory
+	// All done — extract results and concatenate (no Résumeur for groups <= 2)
+	var childResults []string
 	for _, msg := range parent.Memory {
 		if strings.HasPrefix(msg.Content, "[CHILD_REPORT") {
 			parts := strings.SplitN(msg.Content, "]:\n", 2)
 			if len(parts) == 2 {
-				var parsed map[string]interface{}
-				if err := json.Unmarshal([]byte(parts[1]), &parsed); err == nil {
-					if res, ok := parsed["result"].(string); ok {
-						childResults = append(childResults, res)
-					} else if sum, ok := parsed["result_summary"].(string); ok {
-						childResults = append(childResults, sum)
-					} else {
-						childResults = append(childResults, parts[1])
-					}
-				} else {
-					childResults = append(childResults, parts[1])
-				}
+				childResults = append(childResults, extractResultText([]byte(parts[1])))
 			}
 		}
 	}
 
-	// Structure the synthesis based on child count
-	numChildren := len(childResults)
 	var finalSummary string
-
-	if numChildren <= 3 {
-		// 1-3 agents: No Resumeur, just concatenate.
-		log.Printf("[PROCESSOR] 🔄 Group of %d agents (<=3) — no Resumeur, direct concatenation", numChildren)
-		p.broadcastLog(fmt.Sprintf("🔄 Groupe de %d agents — concaténation directe sans Résumeur.", numChildren))
-		for idx, res := range childResults {
-			finalSummary += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", idx+1, res)
-		}
-	} else if numChildren <= 7 {
-		// 4-7 agents: 1 Resumeur
-		log.Printf("[PROCESSOR] 🔄 Group of %d agents (4-7) — invoking 1 Resumeur", numChildren)
-		p.broadcastLog(fmt.Sprintf("🔄 Groupe de %d agents — appel de 1 Résumeur...", numChildren))
-
-		var allChildResultsStr string
-		for idx, res := range childResults {
-			allChildResultsStr += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", idx+1, res)
-		}
-
-		finalSummary = p.callResumeur(parent, allChildResultsStr)
-	} else {
-		// 8-12 agents: 2 Resumeurs
-		log.Printf("[PROCESSOR] 🔄 Group of %d agents (8-12) — invoking 2 Resumeurs", numChildren)
-		p.broadcastLog(fmt.Sprintf("🔄 Groupe de %d agents — appel de 2 Résumeurs séquentiels...", numChildren))
-
-		half := numChildren / 2
-		var part1, part2 string
-		for idx, res := range childResults[:half] {
-			part1 += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", idx+1, res)
-		}
-		for idx, res := range childResults[half:] {
-			part2 += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", half+idx+1, res)
-		}
-
-		sum1 := p.callResumeur(parent, part1)
-		sum2 := p.callResumeur(parent, part2)
-
-		finalSummary = fmt.Sprintf("=== SYNTHÈSE PARTIE 1 ===\n%s\n\n=== SYNTHÈSE PARTIE 2 ===\n%s", sum1, sum2)
+	for idx, res := range childResults {
+		finalSummary += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", idx+1, res)
 	}
 
-	// Then report to parent
 	p.reportToParent(parent, message.RptDone, map[string]interface{}{
 		"result_summary": finalSummary,
 	})
@@ -407,6 +449,20 @@ func (p *Processor) handleChildReport(parent *agent.Agent, pkt message.Packet) e
 	parent.UpdatedAt = time.Now()
 	p.broadcastState(parent)
 	return nil
+}
+
+// extractResultText extracts the human-readable result from a JSON result payload.
+func extractResultText(resultJSON []byte) string {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(resultJSON, &parsed); err == nil {
+		if res, ok := parsed["result"].(string); ok && res != "" {
+			return res
+		}
+		if sum, ok := parsed["result_summary"].(string); ok && sum != "" {
+			return sum
+		}
+	}
+	return string(resultJSON)
 }
 
 func (p *Processor) callResumeur(parent *agent.Agent, content string) string {
@@ -455,41 +511,104 @@ func (p *Processor) callResumeur(parent *agent.Agent, content string) string {
 }
 
 // handleSpawn creates child agents from the LLM's SPAWN action.
+// BUBBLE SYSTEM: If N >= 3 workers, auto-creates a Postier agent and registers a closed Bubble.
+// Workers are then told to report to the Postier, not the parent.
 func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) error {
 	log.Printf("[PROCESSOR] 🔍 SPAWN payload raw: %s", string(payload))
 
-	var spawn SpawnPayload
 	subtasks := p.parseSubtasks(payload)
 
 	// Enforce maximum of 12 sub-agents spawned by a single agent
 	if len(subtasks) > 12 {
 		log.Printf("[PROCESSOR] ⚠ Agent %s attempted to spawn %d children, capping at 12.", parent.ID[:8], len(subtasks))
-		p.broadcastLog(fmt.Sprintf("⚠ %s tente de créer %d enfants (limite 12) - Troncature.", parent.ID[:8], len(subtasks)))
+		p.broadcastLog(fmt.Sprintf("⚠ %s tente de créer %d enfants (limite 12) — Troncature.", parent.ID[:8], len(subtasks)))
 		subtasks = subtasks[:12]
 	}
 
-	spawn.Subtasks = subtasks
+	numWorkers := len(subtasks)
+	log.Printf("[PROCESSOR] 🔀 Agent %s spawning %d children", parent.ID[:8], numWorkers)
+	p.broadcastLog(fmt.Sprintf("🔀 %s (%s) crée %d sous-agents", parent.ID[:8], parent.Role, numWorkers))
 
-	log.Printf("[PROCESSOR] 🔀 Agent %s spawning %d children", parent.ID[:8], len(spawn.Subtasks))
-	p.broadcastLog(fmt.Sprintf("🔀 %s crée %d sous-agents", parent.ID[:8], len(spawn.Subtasks)))
-
-	// Journal: record spawn
 	if p.journal != nil {
 		var spawnInfo string
-		for _, t := range spawn.Subtasks {
+		for _, t := range subtasks {
 			spawnInfo += fmt.Sprintf("- **%s** : %s\n", t.Role, t.TaskDescription)
 		}
-		p.journal.Record(parent.ID, string(parent.Role), parent.BubbleID, journal.EntrySpawn, fmt.Sprintf("Création de %d sous-agents :\n%s", len(spawn.Subtasks), spawnInfo))
+		p.journal.Record(parent.ID, string(parent.Role), parent.BubbleID, journal.EntrySpawn,
+			fmt.Sprintf("Création de %d sous-agents :\n%s", numWorkers, spawnInfo))
 	}
 
 	parent.Status = agent.StatusWaiting
 	parent.UpdatedAt = time.Now()
-	parent.SubtasksPending = len(spawn.Subtasks)
 	p.broadcastState(parent)
 
-	// Calculate fair budget fraction based on number of children
-	numChildren := len(spawn.Subtasks)
-	fairFraction := 0.8 / float64(numChildren) // 80% of budget split among children, 20% reserve
+	// --- BUBBLE SYSTEM ---
+	// Determine if we need a Postier hub for this group.
+	needsPostier := graph.NeedsPostier(numWorkers)
+
+	// Generate a fresh, unique bubbleID for this closed group.
+	bubbleID := uuid.New().String()
+
+	// Register the bubble in the Registry BEFORE spawning workers.
+	p.registry.RegisterBubble(bubbleID, parent.ID, numWorkers)
+
+	// Create the Postier agent if the group is large enough.
+	var postierID string
+	if needsPostier {
+		postierBudget, err := p.budgetMgr.AllocateFromParent(parent.ID, 0.05) // Postier gets 5% budget
+		if err != nil {
+			log.Printf("[PROCESSOR] ⚠ Budget allocation for Postier failed: %v — proceeding without Postier", err)
+			needsPostier = false
+		} else {
+			postier := &agent.Agent{
+				ID:        uuid.New().String(),
+				BubbleID:  bubbleID,
+				Role:      agent.RolePostier,
+				Status:    agent.StatusWaiting,
+				Budget:    postierBudget,
+				Memory:    make([]agent.Message, 0),
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			postierID = postier.ID
+
+			// Update the bubble's PostierID
+			if b := p.registry.GetBubble(bubbleID); b != nil {
+				b.PostierID = postierID
+			}
+
+			if err := p.registry.Register(postier); err != nil {
+				log.Printf("[PROCESSOR] ❌ Failed to register Postier: %v", err)
+				needsPostier = false
+			} else {
+				p.budgetMgr.RegisterAgent(postierID, postierBudget)
+				if p.repo != nil {
+					p.repo.UpsertAgent(p.ctx, postier)
+				}
+				p.wsHub.Broadcast(ws.Event{
+					Type: ws.EventGraphUpdate,
+					Payload: map[string]interface{}{
+						"action": "ADD_NODE",
+						"agent":  postier,
+					},
+				})
+				log.Printf("[POSTIER] 🏤 Postier %s created for bubble %s (parent: %s)", postierID[:8], bubbleID[:8], parent.ID[:8])
+				p.broadcastLog(fmt.Sprintf("🏤 Postier créé pour la bulle (%d workers)", numWorkers))
+			}
+		}
+	}
+
+	// Parent waits for ONE report (from the Postier, or directly from children if no Postier)
+	if needsPostier {
+		// Parent has exactly 1 pending subtask: the Postier will deliver one consolidated result.
+		parent.SubtasksPending = 1
+	} else {
+		// No Postier — parent waits for all individual workers directly.
+		parent.SubtasksPending = numWorkers
+	}
+
+	// Calculate fair budget fraction for workers
+	fairFraction := 0.8 / float64(numWorkers)
 	if fairFraction > 0.5 {
 		fairFraction = 0.5
 	}
@@ -497,7 +616,9 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 		fairFraction = 0.001
 	}
 
-	for i, task := range spawn.Subtasks {
+	// Spawn all worker agents
+	spawnedCount := 0
+	for i, task := range subtasks {
 		fraction := task.BudgetFraction
 		if fraction <= 0 || fraction > 0.8 {
 			fraction = fairFraction
@@ -507,7 +628,16 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 		if err != nil {
 			log.Printf("[PROCESSOR] ⚠ Budget allocation failed for child %d: %v", i, err)
 			p.broadcastLog(fmt.Sprintf("⚠ Budget insuffisant pour créer le sous-agent %d", i+1))
-			parent.SubtasksPending--
+			// If parent is waiting for this worker (no Postier), decrement pending
+			if !needsPostier {
+				parent.SubtasksPending--
+			}
+			// In Postier mode, update bubble worker count
+			if needsPostier {
+				if b := p.registry.GetBubble(bubbleID); b != nil {
+					b.WorkerCount--
+				}
+			}
 			continue
 		}
 
@@ -517,21 +647,23 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 		}
 
 		child := &agent.Agent{
-			ID:         uuid.New().String(),
-			BubbleID:   parent.ID, // The parent's ID becomes the BubbleID for this group
-			Role:       role,
-			Status:     agent.StatusBorn,
-			Budget:     childBudget,
-			RetryCount: 0,
-			Memory:     make([]agent.Message, 0),
-			CreatedAt:  time.Now(),
-			UpdatedAt:  time.Now(),
+			ID:        uuid.New().String(),
+			BubbleID:  bubbleID,
+			PostierID: postierID, // Empty string if no Postier (<=2 workers)
+			Role:      role,
+			Status:    agent.StatusBorn,
+			Budget:    childBudget,
+			Memory:    make([]agent.Message, 0),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
 		}
 
 		if err := p.registry.Register(child); err != nil {
 			log.Printf("[PROCESSOR] ❌ Failed to register child: %v", err)
 			p.broadcastLog(fmt.Sprintf("❌ Échec enregistrement sous-agent: %v", err))
-			parent.SubtasksPending--
+			if !needsPostier {
+				parent.SubtasksPending--
+			}
 			continue
 		}
 
@@ -540,13 +672,10 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 			continue
 		}
 
-		// The Registry handles adding the child to the parent's Bubble (ID = parent.ID)
-
 		if p.repo != nil {
 			p.repo.UpsertAgent(p.ctx, child)
 		}
 
-		// Broadcast new node to frontend
 		p.wsHub.Broadcast(ws.Event{
 			Type: ws.EventGraphUpdate,
 			Payload: map[string]interface{}{
@@ -555,10 +684,24 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 			},
 		})
 
-		log.Printf("[PROCESSOR] ✅ Spawned child %s (%s) for task: %s", child.ID[:8], child.Role, task.TaskDescription[:min(50, len(task.TaskDescription))])
-		p.broadcastLog(fmt.Sprintf("✅ Sous-agent %s (%s) créé: %s", child.ID[:8], child.Role, truncate(task.TaskDescription, 60)))
+		taskDesc := task.TaskDescription
+		log.Printf("[PROCESSOR] ✅ Spawned child %s (%s) → reports to %s",
+			child.ID[:8], child.Role,
+			func() string {
+				if postierID != "" {
+					return "Postier " + postierID[:8]
+				}
+				return "Parent " + parent.ID[:8]
+			}())
+		p.broadcastLog(fmt.Sprintf("✅ Worker %s (%s) créé: %s", child.ID[:8], child.Role, truncate(taskDesc, 60)))
 
-		// Send the task to the child
+		// Determine where the worker should send its RPT_DONE:
+		// → to the Postier if one exists, otherwise directly to the parent.
+		reportTarget := parent.ID
+		if needsPostier && postierID != "" {
+			reportTarget = postierID
+		}
+
 		taskPkt := message.Packet{
 			Head: message.Header{
 				ID:        uuid.New().String(),
@@ -568,40 +711,35 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 				Type:      message.CmdTask,
 			},
 			Body: map[string]interface{}{
-				"task_description": task.TaskDescription,
+				"task_description": taskDesc,
 				"from_parent":      parent.ID,
 				"parent_role":      string(parent.Role),
+				"report_to":        reportTarget, // Tells the worker where to report
 			},
 		}
 		p.dispatch.Enqueue(taskPkt)
+		spawnedCount++
 	}
 
 	if p.repo != nil {
 		p.repo.UpsertAgent(p.ctx, parent)
 	}
 
-	// FALLBACK: if no children were created (all budget allocations failed),
-	// the agent does WORK itself instead of waiting forever
-	bBubble := p.registry.GetBubble(parent.ID)
-	numSpawned := 0
-	if bBubble != nil {
-		numSpawned = len(bBubble.AgentIDs)
-	}
-	if numSpawned == 0 {
+	// FALLBACK: if no children were successfully spawned, do the work directly.
+	if spawnedCount == 0 {
 		log.Printf("[PROCESSOR] ⚠ Agent %s SPAWN failed (0 children created) — falling back to WORK", parent.ID[:8])
 		p.broadcastLog(fmt.Sprintf("⚠ %s n'a pu créer aucun sous-agent — fait le travail lui-même", parent.ID[:8]))
 
 		parent.Status = agent.StatusWorking
+		parent.SubtasksPending = 0
 		parent.UpdatedAt = time.Now()
 		p.broadcastState(parent)
 
-		// Combine all subtask descriptions into a single task
 		var combinedTask string
-		for _, task := range spawn.Subtasks {
+		for _, task := range subtasks {
 			combinedTask += "- " + task.TaskDescription + "\n"
 		}
 
-		// Re-call LLM with a forced WORK prompt
 		workPrompt := fmt.Sprintf("Tu n'as pas assez de budget pour déléguer. FAIS LE TRAVAIL TOI-MÊME.\n"+
 			"Voici les tâches à accomplir :\n%s\n"+
 			"Réponds avec {\"action\": \"WORK\", \"payload\": {\"result\": \"...\", \"confidence\": 0.0-1.0}}", combinedTask)
@@ -619,22 +757,14 @@ func (p *Processor) handleSpawn(parent *agent.Agent, payload json.RawMessage) er
 			return err
 		}
 
-		// Deduct tokens
 		p.budgetMgr.Deduct(parent.ID, float64(resp.TokensUsed))
 		parent.Budget, _ = p.budgetMgr.GetBudget(parent.ID)
-
-		log.Printf("[PROCESSOR] ✅ Fallback WORK for %s: %d tokens", parent.ID[:8], resp.TokensUsed)
 
 		var action LLMAction
 		if err := json.Unmarshal([]byte(resp.RawJSON), &action); err == nil {
 			return p.handleWork(parent, action.Payload)
 		}
-		// If parse fails, treat raw response as work result
 		return p.handleWork(parent, json.RawMessage(fmt.Sprintf(`{"result": %s, "confidence": 0.7}`, resp.RawJSON)))
-	}
-
-	if p.repo != nil {
-		p.repo.UpsertAgent(p.ctx, parent)
 	}
 
 	return nil
@@ -883,9 +1013,29 @@ func (p *Processor) killAgent(ag *agent.Agent, reason string) error {
 	return nil
 }
 
-// reportToParent sends a report packet to the Bubble's Postier/Creator.
+// reportToParent sends a report packet from an agent to the correct recipient.
+// Routing logic:
+//   - Worker with a PostierID → reports to its Postier
+//   - Agent with a BubbleID but no PostierID → reports to the bubble's parent (small group)
+//   - Root agent (no BubbleID) → broadcasts to frontend
 func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, body map[string]interface{}) {
-	if ag.BubbleID == "" {
+	// Determine where to send the report
+	targetID := ""
+	if ag.PostierID != "" {
+		// Worker with a Postier — report to the Postier
+		targetID = ag.PostierID
+	} else if ag.BubbleID != "" {
+		// Small group or Postier reporting to parent — use BubbleID as target
+		bubble := p.registry.GetBubble(ag.BubbleID)
+		if bubble != nil && bubble.ParentAgentID != "" {
+			targetID = bubble.ParentAgentID
+		} else {
+			// Fallback: BubbleID itself (old behavior)
+			targetID = ag.BubbleID
+		}
+	}
+
+	if targetID == "" {
 		// Root agent — broadcast final result to frontend
 		log.Printf("[PROCESSOR] 🏁 Root agent %s completed — broadcasting final result", ag.ID[:8])
 		p.wsHub.Broadcast(ws.Event{
@@ -896,10 +1046,10 @@ func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, 
 			},
 		})
 
-		// Auto-generate journal markdown
 		if p.journal != nil {
 			resultJSON, _ := json.MarshalIndent(body, "", "  ")
-			p.journal.Record(ag.ID, string(ag.Role), ag.BubbleID, journal.EntryReport, fmt.Sprintf("**Rapport final :**\n```json\n%s\n```", string(resultJSON)))
+			p.journal.Record(ag.ID, string(ag.Role), ag.BubbleID, journal.EntryReport,
+				fmt.Sprintf("**Rapport final :**\n```json\n%s\n```", string(resultJSON)))
 			if path, err := p.journal.GenerateMarkdown(); err == nil {
 				log.Printf("[PROCESSOR] 📓 Journal auto-généré: %s", path)
 				p.broadcastLog(fmt.Sprintf("📓 Journal sauvegardé: %s", path))
@@ -909,15 +1059,11 @@ func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, 
 			p.journal.Reset()
 		}
 
-		// Also write the raw text to a dedicated file for massive texts
 		if summary, ok := body["result_summary"].(string); ok {
 			os.WriteFile("LIVRE_SF_COMPLET.md", []byte(summary), 0644)
-			log.Printf("[PROCESSOR] 📖 Livre final exporté dans LIVRE_SF_COMPLET.md")
 		} else if result, ok := body["result"].(string); ok {
 			os.WriteFile("LIVRE_SF_COMPLET.md", []byte(result), 0644)
-			log.Printf("[PROCESSOR] 📖 Livre final exporté dans LIVRE_SF_COMPLET.md")
 		}
-
 		return
 	}
 
@@ -926,7 +1072,7 @@ func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, 
 			ID:        uuid.New().String(),
 			Timestamp: time.Now().Unix(),
 			From:      ag.ID,
-			To:        ag.BubbleID,
+			To:        targetID,
 			Type:      pktType,
 		},
 		Body: body,
@@ -988,4 +1134,11 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ExecSpawnPayload is a public test-helper that exercises the full SPAWN logic
+// (Postier creation, bubble registration, worker spawning) without requiring an LLM call.
+// It should only be used in tests.
+func (p *Processor) ExecSpawnPayload(parent *agent.Agent, payloadBytes []byte) error {
+	return p.handleSpawn(parent, payloadBytes)
 }

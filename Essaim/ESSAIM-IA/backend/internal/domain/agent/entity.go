@@ -23,6 +23,8 @@ const (
 	RoleWorker    AgentRole = "WORKER"
 	RoleCritic    AgentRole = "CRITIC"
 	RoleCoder     AgentRole = "CODER"
+	RoleManager   AgentRole = "MANAGER"
+	RoleDirector  AgentRole = "DIRECTOR"
 )
 
 // Message represents a single entry in the agent's memory (context window FIFO).
@@ -37,6 +39,7 @@ type Message struct {
 type Agent struct {
 	ID              string      `bson:"_id" json:"id"`
 	BubbleID        string      `bson:"bubble_id" json:"bubbleId"`
+	PostierID       string      `bson:"postier_id" json:"postierId"` // ID of the Postier managing this bubble (empty if direct parent)
 	Role            AgentRole   `bson:"role" json:"role"`
 	Status          AgentStatus `bson:"status" json:"status"`
 	Budget          float64     `bson:"budget" json:"budget"`
