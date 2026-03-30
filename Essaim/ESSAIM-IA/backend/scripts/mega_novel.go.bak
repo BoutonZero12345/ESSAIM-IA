@@ -1,0 +1,134 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+func runMegaMission() bool {
+	fmt.Println("================================================")
+	fmt.Println("🚀 STARTING MEGA NOVEL GENERATION (This may take hours)")
+	fmt.Println("================================================")
+
+	// Build the server directly
+	buildCmd := exec.Command("go", "build", "-o", "server_epic.exe", "cmd/server/main.go")
+	buildCmd.Dir = "."
+	buildOut, err := buildCmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Error building server: %v\nOutput: %s\n", err, string(buildOut))
+		return false
+	}
+
+	cmd := exec.Command(".\\server_epic.exe")
+	cmd.Dir = "."
+
+	logFile, _ := os.Create("mega_novel.log")
+	defer logFile.Close()
+
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("Error starting server: %v\n", err)
+		return false
+	}
+
+	defer func() {
+		fmt.Println("🛑 Cleaning up server process...")
+		cmd.Process.Kill()
+		cmd.Wait()
+		os.Remove("server_epic.exe")
+	}()
+
+	successChan := make(chan bool)
+
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			text := scanner.Text()
+			logFile.WriteString("[SERVER] " + text + "\n")
+
+			// Print progress every time an agent is spawned or work is done to monitor progress on terminal
+			if strings.Contains(text, "✅ Sous-agent") || strings.Contains(text, "📝 Agent") || strings.Contains(text, "🤖 Appel LLM") {
+				fmt.Println(text)
+			}
+
+			if strings.Contains(text, "🏁 Root agent") && strings.Contains(text, "completed") {
+				logFile.WriteString("✨ MEGA MISSION COMPLETED DETECTED!\n")
+				fmt.Println("\n\n✨ IL L'A FAIT ! MISSION TERMINÉE. LIVRE ÉCRIT.")
+				successChan <- true
+				return
+			}
+			if strings.Contains(text, "Shutting down gracefully") || strings.Contains(text, "Failed to start") {
+				successChan <- false
+				return
+			}
+		}
+		successChan <- false
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			logFile.WriteString("[SERVER ERR] " + scanner.Text() + "\n")
+		}
+	}()
+
+	// Wait for server to boot
+	time.Sleep(5 * time.Second)
+
+	// User's exact mega prompt, aggressively formatted to force massive spawning
+	prompt := `Ecrit moi un livre. Je veux un court roman de science fiction avec une forte morale. La morale doit motiver ceux qui abandonne toujours leurs projet de persévérer.
+Je veux un livre de 500 pages environ, de 125 000 mots environ.
+Je veux une vrai profondeur des personnages, je veux un fil rouge intéressant. Je veux des remises en questions, de la société, des personnages, un doute sur la morale, une profondeur d'esprit significative, et surtout je veux un monde complet, un monde si complet, qu'une saga de livre entière pourrait être écrite, je veux quelque chose de profondément bien fait.
+
+🚨 INSTRUCTIONS DE DÉLÉGATION OBLIGATOIRES (POUR Atteindre LES 125 000 MOTS) 🚨
+TU DOIS ABSOLUMENT EXÉCUTER L'ACTION "SPAWN" AVEC UN MINIMUM DE 100 À 150 SOUS-TÂCHES ("subtasks").
+1. Crée un "World_Builder" pour définir la bible de l'univers.
+2. Crée un "Character_Designer" pour les fiches persos.
+3. Crée au moins 100 "Chapter_Writer" (un par sous-chapitre ou événement).
+4. Ne fais SURTOUT PAS un résumé. Délègue massivement. Ton budget (300 000 000 tokens) te le permet largement.`
+
+	// The prompt has to be properly escaped
+	promptEscaped := strings.ReplaceAll(prompt, "\n", "\\n")
+	promptEscaped = strings.ReplaceAll(promptEscaped, "\"", "\\\"")
+
+	payload := fmt.Sprintf(`{"objective": "%s", "budget": 300}`, promptEscaped)
+
+	fmt.Println("📡 Sending MEGA /start request to local server... (Budget 300 Euros)")
+	resp, err := http.Post("http://localhost:8080/start", "application/json", bytes.NewBuffer([]byte(payload)))
+	if err != nil {
+		fmt.Printf("HTTP request failed: %v\n", err)
+		return false
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != 201 && resp.StatusCode != 200 {
+		fmt.Printf("Warning: Server returned HTTP %d\n", resp.StatusCode)
+	}
+
+	// Wait for either success or a massive timeout (10 hours for a full book)
+	select {
+	case success := <-successChan:
+		time.Sleep(2 * time.Second) // wait for file IO (journals, LIVRE_SF_COMPLET.md)
+		return success
+	case <-time.After(10 * time.Hour):
+		fmt.Println("⏳ Timeout reached (10 hours). Test failed.")
+		return false
+	}
+}
+
+func main() {
+	fmt.Println("Démarrage du script épique ESSAIM-IA...")
+	if runMegaMission() {
+		fmt.Println("✅ SUCCES EPIQUE !!! LE LIVRE EST DANS 'LIVRE_SF_COMPLET.md'")
+	} else {
+		fmt.Println("❌ ECHEC EPIQUE.")
+	}
+}

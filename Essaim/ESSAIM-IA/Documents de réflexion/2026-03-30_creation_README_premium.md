@@ -1,0 +1,8 @@
+- **Ce que j'ai dit :** J'ai proposé et validé un plan pour créer un README.md de niveau professionnel ("Premium Portfolio") afin de valoriser le projet ESSAIM-IA pour des recruteurs. J'ai insisté sur l'architecture système et la vision au-delà de simples appels d'API.
+- **Ce que j'ai fait :**
+  - Géneration d'une bannière futuriste avec `generate_image`.
+  - Création du répertoire `assets/` et transfert de l'image de marque.
+  - Création du fichier `README.md` à la racine du projet avec une structure complète (Vision, Architecture de Bulles, Stack Go, Roadmap).
+- **Fichiers modifiés :**
+  - `README.md` : Création du document de présentation principal du projet.
+  - `assets/banner.png` : Ajout de l'identité visuelle du projet.
