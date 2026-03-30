@@ -103,10 +103,11 @@ func (p *Processor) reportToParent(ag *agent.Agent, pktType message.PacketType, 
 			p.journal.Reset()
 		}
 
+		fileName := fmt.Sprintf("ROMAN_FANTASTIQUE_%d.md", time.Now().Unix())
 		if summary, ok := body["result_summary"].(string); ok {
-			os.WriteFile("LIVRE_SF_COMPLET.md", []byte(summary), 0644)
+			os.WriteFile(fileName, []byte(summary), 0644)
 		} else if result, ok := body["result"].(string); ok {
-			os.WriteFile("LIVRE_SF_COMPLET.md", []byte(result), 0644)
+			os.WriteFile(fileName, []byte(result), 0644)
 		}
 
 		// Generate the mission auto-bilan

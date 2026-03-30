@@ -251,22 +251,67 @@ func (p *Processor) handleDirectParentReport(parent *agent.Agent, pkt message.Pa
 		finalSummary += fmt.Sprintf("\n\n--- OUTPUT DE L'AGENT %d ---\n\n%s", idx+1, res)
 	}
 
-	p.reportToParent(parent, message.RptDone, map[string]interface{}{
-		"result_summary": finalSummary,
+	// ÉVOLUTION MULTI-TOUR : Au lieu de mourir et de transférer bêtement le rapport,
+	// l'agent parent "se réveille" pour lire ce que ses enfants ont fait.
+	var newMemory []agent.Message
+	for _, msg := range parent.Memory {
+		if !strings.HasPrefix(msg.Content, "[CHILD_REPORT") {
+			newMemory = append(newMemory, msg)
+		}
+	}
+	parent.Memory = newMemory
+
+	parent.Memory = append(parent.Memory, agent.Message{
+		Role:    "user",
+		Content: fmt.Sprintf("Tes sous-agents ont terminé leurs missions.\n\n=== RÉSULTATS DES SOUS-AGENTS ===\n%s\n\nAnalysez cette production. Que décides-tu de faire maintenant dans le cadre de ton objectif initial ?\nChoisis une action : 'WORK' (traitement local final ou temporaire), 'SPAWN' (nouvelle vague de délégation s'il manque des choses), ou 'REPORT' (si TOUTE ta mission est définitivement achevée avec un livrable final qualitatif).", finalSummary),
 	})
 
-	parent.Status = agent.StatusDead
+	// ANTI-BOUCLE / HEURISTIQUE DE SÉCURITÉ : Limite à ~4 itérations (soit 8 messages max)
+	if len(parent.Memory) > 8 {
+		p.broadcastLog(fmt.Sprintf("🛑 Anti-boucle : l'agent %s a atteint la limite d'itérations. Rapport forcé.", parent.ID[:8]))
+		p.reportToParent(parent, message.RptDone, map[string]interface{}{
+			"result_summary": finalSummary,
+		})
+		parent.Status = agent.StatusDead
+		parent.UpdatedAt = time.Now()
+		p.broadcastState(parent)
+		return nil
+	}
+
+	parent.Status = agent.StatusWaiting
 	parent.UpdatedAt = time.Now()
 	p.broadcastState(parent)
+
+	if p.repo != nil {
+		p.repo.UpsertAgent(p.ctx, parent)
+	}
+
+	p.broadcastLog(fmt.Sprintf("🔄 %s (%s) se réveille pour analyser le résultat de ses sous-agents.", parent.ID[:8], parent.Role))
+
+	// Re-enqueue a task for the parent to trigger the LLM call with its new memory
+	p.dispatch.Enqueue(message.Packet{
+		Head: message.Header{
+			ID:        uuid.New().String(),
+			Timestamp: time.Now().Unix(),
+			From:      parent.ID,
+			To:        parent.ID,
+			Type:      message.CmdTask,
+		},
+		Body: map[string]interface{}{
+			"internal_instruction": "Evaluate children results and decide next action",
+		},
+	})
+
 	return nil
 }
 
 func (p *Processor) callResumeur(parent *agent.Agent, content string) string {
 	resumeurPrompt := fmt.Sprintf(
 		"Voici les productions terminées d'une partie du sous-groupe.\n"+
-			"TA TÂCHE : Lis l'intégralité de ces travaux, crée un compte-rendu consolidé et intelligent (Executive Summary) "+
-			"pour le Manager de ce groupe. Garde l'essence, les décisions clés, les pépites et le code si présent, mais retire le bruit inutile.\n\n%s\n\n"+
-			"Réponds en JSON strict : {\"action\": \"REPORT\", \"payload\": {\"result_summary\": \"[TON RÉSUMÉ CONSOLIDÉ ICI]\", \"artifacts\": [], \"confidence_score\": 1.0}}",
+			"TA TÂCHE : Lis l'intégralité de ces travaux et assemble-les pour former un texte ou un chapitre magistral, cohérent et interconnecté.\n"+
+			"INSTRUCTION CRITIQUE : NE RÉSUME RIEN. Tu ne dois sous aucun prétexte raccourcir l'histoire, couper des dialogues ou effacer des descriptions importantes.\n"+
+			"Ton unique but est de fluidifier les transitions entre les textes pour obtenir la narration la plus longue et la plus riche possible.\n\n%s\n\n"+
+			"Réponds en JSON strict : {\"action\": \"REPORT\", \"payload\": {\"result_summary\": \"[TON TEXTE ASSEMBLÉ COMPLET ICI]\", \"artifacts\": [], \"confidence_score\": 1.0}}",
 		content,
 	)
 
