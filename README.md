@@ -1,4 +1,4 @@
-![ESSAIM-IA Banner](assets/banner.png)
+![ESSAIM-IA Banner](Essaim/ESSAIM-IA/assets/banner.png)
 
 <div align="center">
   <h1>🐝 ESSAIM-IA</h1>
