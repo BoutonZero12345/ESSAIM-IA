@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -190,6 +191,47 @@ func main() {
 		})
 	})
 
+	// GET /api/test-llm - Test in-situ if GEMINI_API_KEY is valid and authorized
+	mux.HandleFunc("/api/test-llm", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[API] GET /api/test-llm from %s", r.RemoteAddr)
+		w.Header().Set("Content-Type", "application/json")
+
+		if llmClient == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":  "error",
+				"message": "Client LLM non initialisé (clé GEMINI_API_KEY manquante dans le fichier .env)",
+			})
+			return
+		}
+
+		// Quick 15s timeout for Gemini API key response ping
+		testCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+
+		systemPrompt := "Tu es un service de test. Réponds obligatoirement avec un format JSON strict : {\"status\": \"ok\"}"
+		userMessage := "Ping"
+
+		resp, err := llmClient.Call(testCtx, systemPrompt, userMessage)
+		if err != nil {
+			log.Printf("[API] ❌ Gemini API test failed: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":  "error",
+				"message": fmt.Sprintf("Clé API invalide ou expirée: %v", err),
+			})
+			return
+		}
+
+		log.Println("[API] ✅ Gemini API test successful!")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":     "ok",
+			"message":    "Clé API Gemini valide et active !",
+			"latency_ms": resp.LatencyMs,
+			"model":      geminiModel,
+		})
+	})
+
 	// POST /start - Genesis: Inject the first Agent "Alpha"
 	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[API] %s /start from %s", r.Method, r.RemoteAddr)
@@ -298,6 +340,45 @@ func main() {
 		})
 
 		log.Printf("[GENESIS] ✅ Agent Alpha (%s) spawned with objective: %s", alpha.ID, req.Objective)
+	})
+
+	// POST /stop - Terminate the entire active swarm
+	mux.HandleFunc("/stop", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[API] POST /stop from %s", r.RemoteAddr)
+		w.Header().Set("Content-Type", "application/json")
+
+		activeNodes := registry.AllNodes()
+		count := len(activeNodes)
+
+		for _, n := range activeNodes {
+			id := n.Agent.ID
+			// Remove from registry
+			registry.Remove(id)
+			// Remove budget
+			budgetMgr.RemoveAgent(id)
+
+			// Broadcast removal to clients
+			wsHub.Broadcast(ws.Event{
+				Type: ws.EventGraphUpdate,
+				Payload: map[string]interface{}{
+					"action":  "REMOVE_NODE",
+					"agentId": id,
+				},
+			})
+		}
+
+		// Send a system alert message
+		wsHub.Broadcast(ws.Event{
+			Type: ws.EventSystemAlert,
+			Payload: map[string]interface{}{
+				"message": "⚠️ ESSAIM ARRÊTÉ : Mission interrompue manuellement par l'opérateur.",
+			},
+		})
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":              "stopped",
+			"killed_agents_count": count,
+		})
 	})
 
 	// CORS middleware wrapper

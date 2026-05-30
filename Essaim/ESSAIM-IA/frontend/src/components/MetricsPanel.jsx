@@ -1,5 +1,5 @@
 import React from 'react'
-import { Coins, CircleDollarSign, Activity, Users } from 'lucide-react'
+import { Users, Coins, DollarSign } from 'lucide-react'
 
 export default function MetricsPanel({ totalTokens, totalCost, agentCount, activeAgentCount, isLive }) {
   return (
@@ -26,16 +26,16 @@ export default function MetricsPanel({ totalTokens, totalCost, agentCount, activ
         </div>
       </div>
 
-      {/* Euro Counter */}
+      {/* Cost Counter */}
       <div className="glass-panel px-4 py-2 flex items-center gap-3" style={{ 
         background: 'rgba(13, 17, 27, 0.4)',
         borderColor: isLive ? 'rgba(0, 230, 118, 0.15)' : 'var(--border-color)'
       }}>
-        <CircleDollarSign size={16} className="text-green-400" style={{ color: 'var(--role-worker)' }} />
+        <DollarSign size={16} className="text-green-400" style={{ color: 'var(--role-worker)' }} />
         <div className="flex flex-col">
-          <span className="text-[10px] uppercase text-[var(--text-muted)] font-semibold tracking-wider">Coût Estimé</span>
+          <span className="text-[10px] uppercase text-[var(--text-muted)] font-semibold tracking-wider">Coût Gemini 2.5</span>
           <span className="text-sm font-bold tracking-tight text-green-400" style={{ color: 'var(--role-worker)' }}>
-            {totalCost.toFixed(5)} €
+            {totalCost.toFixed(5)} $
           </span>
         </div>
       </div>
