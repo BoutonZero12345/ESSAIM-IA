@@ -1,0 +1,5 @@
+- **Ce que j'ai dit :** J'ai ajouté la mention "Totalement vibe codé avec l'outil Antigravity" au README.md comme demandé.
+- **Ce que j'ai fait :**
+  - Mise à jour du header du `README.md` avec la mention Antigravity.
+- **Fichiers modifiés :**
+  - `README.md` : Ajout de la mention de branding Antigravity.
